@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="zh-CN" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>邮箱验证 - Markdown知识库</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            margin: 0;
+            padding: 0;
+            background-color: #f7f9fc;
+        }
+        .email-container {
+            max-width: 600px;
+            margin: 0 auto;
+            background-color: #ffffff;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 40px 30px;
+            text-align: center;
+        }
+        .logo {
+            font-size: 28px;
+            font-weight: 700;
+            margin-bottom: 10px;
+            letter-spacing: 1px;
+        }
+        .tagline {
+            font-size: 16px;
+            opacity: 0.9;
+            margin-top: 5px;
+        }
+        .content {
+            padding: 40px 30px;
+        }
+        .greeting {
+            font-size: 20px;
+            font-weight: 600;
+            color: #2c3e50;
+            margin-bottom: 20px;
+        }
+        .message {
+            font-size: 16px;
+            color: #555;
+            margin-bottom: 30px;
+            line-height: 1.8;
+        }
+        .verification-box {
+            background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+            border-radius: 10px;
+            padding: 25px;
+            margin: 30px 0;
+            text-align: center;
+            border: 1px solid #e0e0e0;
+        }
+        .verification-link {
+            display: inline-block;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            text-decoration: none;
+            padding: 16px 40px;
+            border-radius: 50px;
+            font-weight: 600;
+            font-size: 16px;
+            letter-spacing: 0.5px;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
+        }
+        .verification-link:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
+        }
+        .link-text {
+            font-size: 14px;
+            color: #777;
+            margin-top: 20px;
+            word-break: break-all;
+            line-height: 1.5;
+        }
+        .info-box {
+            background-color: #f8f9fa;
+            border-left: 4px solid #667eea;
+            padding: 15px 20px;
+            margin: 25px 0;
+            border-radius: 0 8px 8px 0;
+        }
+        .footer {
+            background-color: #f1f3f5;
+            padding: 30px;
+            text-align: center;
+            color: #666;
+            font-size: 14px;
+            border-top: 1px solid #e0e0e0;
+        }
+        .social-links {
+            margin-top: 20px;
+        }
+        .social-icon {
+            display: inline-block;
+            margin: 0 10px;
+            color: #667eea;
+            text-decoration: none;
+            font-weight: 500;
+        }
+        .expiry-notice {
+            color: #e74c3c;
+            font-weight: 500;
+            background-color: #ffeaea;
+            padding: 10px 15px;
+            border-radius: 6px;
+            margin: 20px 0;
+            text-align: center;
+            font-size: 14px;
+        }
+        .contact-info {
+            margin-top: 15px;
+            font-size: 13px;
+            color: #888;
+        }
+        @media (max-width: 600px) {
+            .content, .header {
+                padding: 25px 20px;
+            }
+            .verification-link {
+                padding: 14px 30px;
+                font-size: 15px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="email-container">
+        <div class="header">
+            <div class="logo">Markdown知识库</div>
+            <div class="tagline">让知识管理更高效</div>
+        </div>
+        
+        <div class="content">
+            <div class="greeting" th:text="'亲爱的 ' + ${username} + '，'">亲爱的用户，</div>
+            
+            <div class="message">
+                感谢您注册Markdown知识库！为了确保您的账户安全并开始使用我们的服务，请验证您的邮箱地址。
+            </div>
+            
+            <div class="verification-box">
+                <p style="margin-bottom: 20px; color: #444;">点击下方按钮验证您的邮箱：</p>
+                <a th:href="${verificationLink}" class="verification-link">验证邮箱地址</a>
+                
+                <div class="link-text">
+                    如果按钮无法点击，请复制以下链接到浏览器地址栏：<br>
+                    <span th:text="${verificationLink}" style="color: #667eea;"></span>
+                </div>
+            </div>
+            
+            <div class="expiry-notice">
+                ⏰ 请注意：此验证链接将在24小时后失效。
+            </div>
+            
+            <div class="info-box">
+                <strong>为什么要验证邮箱？</strong><br>
+                验证邮箱可以确保您能正常接收重要通知，并能在忘记密码时通过邮箱找回账户。
+            </div>
+            
+            <div class="message">
+                如果您没有注册Markdown知识库，请忽略此邮件。这可能是他人误输入了您的邮箱地址。
+            </div>
+        </div>
+        
+        <div class="footer">
+            <div class="contact-info">
+                如有任何问题，请随时联系我们：<br>
+                📧 support@markdown-knowledge-base.com<br>
+                🌐 <a th:href="${appUrl}" style="color: #667eea;" th:text="${appUrl}"></a>
+            </div>
+            
+            <div class="social-links">
+                <a href="#" class="social-icon">GitHub</a> | 
+                <a href="#" class="social-icon">文档</a> | 
+                <a href="#" class="social-icon">社区</a>
+            </div>
+            
+            <div style="margin-top: 25px; font-size: 12px; color: #999;">
+                &copy; 2024 Markdown知识库. 保留所有权利.<br>
+                您收到此邮件是因为您注册了Markdown知识库服务。
+            </div>
+        </div>
+    </div>
+</body>
+</html>

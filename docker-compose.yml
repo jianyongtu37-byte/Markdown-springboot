@@ -1,0 +1,206 @@
+version: '3.8'
+
+services:
+  # MySQL 数据库
+  mysql:
+    image: mysql:8.0
+    container_name: markdown-mysql
+    environment:
+      # 移除了会导致冲突的 MYSQL_USER 和 MYSQL_PASSWORD
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-root_password}
+      MYSQL_DATABASE: ${DB_NAME:-markdown_db}
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      # 注意：启动前请确保本地目录下已有 schema.sql 文件（哪怕是空的），否则会被识别为文件夹报错
+      - ./schema.sql:/docker-entrypoint-initdb.d/schema.sql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DB_PASSWORD:-root_password}"]
+      timeout: 20s
+      retries: 10
+    networks:
+      - markdown-network
+    restart: unless-stopped
+
+  # Redis 缓存
+  redis:
+    image: redis:7-alpine
+    container_name: markdown-redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    # 强制给了个默认密码 devpassword，防止 .env 没写密码导致语法报错崩溃
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-devpassword}
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-devpassword}", "ping"]
+      timeout: 10s
+      retries: 5
+    networks:
+      - markdown-network
+    restart: unless-stopped
+
+  # Elasticsearch
+  elasticsearch:
+    image: elasticsearch:9.3.2
+    container_name: markdown-elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ports:
+      - "${ES_PORT:-9200}:9200"
+      - "${ES_TRANSPORT_PORT:-9300}:9300"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+      # 【已注释】本地还没搞好权限前先别挂载，需要用时先用 mkdir 创建文件夹并授权 (chown 1000:1000 es_plugins)
+      # - ./es_plugins:/usr/share/elasticsearch/plugins
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:9200/_cluster/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - markdown-network
+    restart: unless-stopped
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+
+  # Markdown 知识库后端应用
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: markdown-app
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    environment:
+      # 数据库配置（统一使用 root 用户连接）
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_NAME=${DB_NAME:-markdown_db}
+      - DB_USERNAME=root
+      - DB_PASSWORD=${DB_PASSWORD:-root_password}
+
+      # Redis配置
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-devpassword}
+      - REDIS_DATABASE=${REDIS_DATABASE:-0}
+
+      # Elasticsearch配置
+      - ES_HOST=elasticsearch
+      - ES_PORT=9200
+      - ES_USERNAME=${ES_USERNAME:-}
+      - ES_PASSWORD=${ES_PASSWORD:-}
+
+      # JWT配置
+      - JWT_SECRET=${JWT_SECRET:-markdown-knowledge-base-secret-key-2025-spring-boot-4.0.5-jwt-token-secret}
+      - JWT_EXPIRATION=${JWT_EXPIRATION:-86400}
+
+      # DeepSeek AI配置
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - DEEPSEEK_API_URL=${DEEPSEEK_API_URL:-https://api.deepseek.com/v1}
+      - DEEPSEEK_MODEL=${DEEPSEEK_MODEL:-deepseek-chat}
+      - DEEPSEEK_TIMEOUT_SECONDS=${DEEPSEEK_TIMEOUT_SECONDS:-30}
+      - DEEPSEEK_MAX_TOKENS=${DEEPSEEK_MAX_TOKENS:-500}
+
+      # 应用配置
+      - SERVER_PORT=8080
+      - SPRING_PROFILES_ACTIVE=${SPRING_PROFILES_ACTIVE:-dev}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+
+      # Spring Boot特定配置
+      - SPRING_DATASOURCE_URL=jdbc:mysql://mysql:3306/${DB_NAME:-markdown_db}?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+      - SPRING_DATASOURCE_USERNAME=root
+      - SPRING_DATASOURCE_PASSWORD=${DB_PASSWORD:-root_password}
+      - SPRING_REDIS_HOST=redis
+      # 【已修正】适配 Spring Boot 3.x / Spring Data ES 5.x 的最新配置项
+      - SPRING_ELASTICSEARCH_URIS=http://elasticsearch:9200
+    ports:
+      - "${SERVER_PORT:-8080}:8080"
+    volumes:
+      - ./logs:/app/logs
+      - ./uploads:/app/uploads
+    networks:
+      - markdown-network
+    restart: unless-stopped
+    healthcheck:
+      # 【已修正】使用 wget 替换 curl，防止精简版 alpine Java 镜像没有 curl 导致健康检查卡死
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # Nginx 反向代理（可选）
+  nginx:
+    image: nginx:alpine
+    container_name: markdown-nginx
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      # 注意：启动前请确保本地已有这两个文件/文件夹，否则会报错
+      - ./nginx.conf:/etc/nginx/nginx.conf
+      - ./ssl:/etc/nginx/ssl
+    networks:
+      - markdown-network
+    restart: unless-stopped
+
+  # Adminer 数据库管理工具（可选）
+  adminer:
+    image: adminer
+    container_name: markdown-adminer
+    depends_on:
+      - mysql
+    ports:
+      - "8081:8080"
+    environment:
+      - ADMINER_DEFAULT_SERVER=mysql
+    networks:
+      - markdown-network
+    restart: unless-stopped
+
+  # Redis Commander Redis管理工具（可选）
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: markdown-redis-commander
+    depends_on:
+      - redis
+    ports:
+      - "8082:8081"
+    environment:
+      # 【已修正】在连接字符串里拼入了密码，保证有密码时也能顺利连接管理面板
+      - REDIS_HOSTS=local:redis:6379:0:${REDIS_PASSWORD:-devpassword}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-devpassword}
+    networks:
+      - markdown-network
+    restart: unless-stopped
+
+networks:
+  markdown-network:
+    driver: bridge
+    name: markdown-network
+
+volumes:
+  mysql_data:
+    driver: local
+    name: markdown-mysql-data
+  redis_data:
+    driver: local
+    name: markdown-redis-data
+  elasticsearch_data:
+    driver: local
+    name: markdown-elasticsearch-data
