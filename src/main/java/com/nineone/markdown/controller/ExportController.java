@@ -1,23 +1,25 @@
 package com.nineone.markdown.controller;
 
-import com.nineone.markdown.common.Result;
+import com.nineone.common.result.Result;
 import com.nineone.markdown.entity.BackupRecord;
-import com.nineone.markdown.exception.AuthenticationException;
-import com.nineone.markdown.security.CustomUserDetails;
 import com.nineone.markdown.service.ExportService;
+import com.nineone.markdown.util.UserContextHolder;
 import lombok.RequiredArgsConstructor;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.*;
 
+import org.springframework.beans.factory.annotation.Value;
+
 import java.io.File;
+import java.io.IOException;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.List;
 
 /**
@@ -30,30 +32,15 @@ public class ExportController {
 
     private final ExportService exportService;
 
-    /**
-     * 获取当前登录用户的ID
-     */
-    private Long getCurrentUserId() {
-        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-        if (authentication == null || !authentication.isAuthenticated()) {
-            throw new AuthenticationException("用户未认证", "UNAUTHENTICATED");
-        }
-
-        Object principal = authentication.getPrincipal();
-        if (principal instanceof CustomUserDetails) {
-            CustomUserDetails userDetails = (CustomUserDetails) principal;
-            return userDetails.getId();
-        } else {
-            throw new AuthenticationException("用户未登录或登录已过期", "TOKEN_EXPIRED");
-        }
-    }
+    @Value("${app.export.dir:exports}")
+    private String exportDir;
 
     /**
      * 导出单篇文章为PDF
      */
     @PostMapping("/{articleId}/pdf")
-    public Result<String> exportToPdf(@PathVariable Long articleId) {
-        Long userId = getCurrentUserId();
+    public Result<String> exportToPdf(@PathVariable("articleId") Long articleId) {
+        Long userId = UserContextHolder.requireUserId();
         String filePath = exportService.exportArticleToPdf(articleId, userId);
         return Result.success("PDF导出成功", filePath);
     }
@@ -62,8 +49,8 @@ public class ExportController {
      * 导出单篇文章为Word
      */
     @PostMapping("/{articleId}/word")
-    public Result<String> exportToWord(@PathVariable Long articleId) {
-        Long userId = getCurrentUserId();
+    public Result<String> exportToWord(@PathVariable("articleId") Long articleId) {
+        Long userId = UserContextHolder.requireUserId();
         String filePath = exportService.exportArticleToWord(articleId, userId);
         return Result.success("Word导出成功", filePath);
     }
@@ -73,7 +60,7 @@ public class ExportController {
      */
     @PostMapping("/all-markdown")
     public Result<String> exportAllMarkdown() {
-        Long userId = getCurrentUserId();
+        Long userId = UserContextHolder.requireUserId();
         String filePath = exportService.exportAllArticlesAsMarkdownZip(userId);
         return Result.success("全站Markdown导出成功", filePath);
     }
@@ -82,9 +69,28 @@ public class ExportController {
      * 下载导出文件
      */
     @GetMapping("/download")
-    public ResponseEntity<Resource> downloadFile(@RequestParam String filePath) {
-        File file = new File(filePath);
-        if (!file.exists()) {
+    public ResponseEntity<Resource> downloadFile(@RequestParam(value = "filePath") String filePath) {
+        // 认证检查：未登录用户无法下载导出文件
+        UserContextHolder.requireUserId();
+
+        // 路径穿越防护：禁止 ..、绝对路径、\ 路径分隔符
+        if (filePath.contains("..") || filePath.startsWith("/") || filePath.contains("\\")) {
+            return ResponseEntity.badRequest().build();
+        }
+
+        // 将导出目录转为绝对路径
+        Path baseDir = Paths.get(exportDir).toAbsolutePath().normalize();
+
+        // 将请求路径拼接在导出目录下并规范化
+        Path resolvedPath = baseDir.resolve(filePath).normalize();
+
+        // 确保解析后的路径仍在导出目录内
+        if (!resolvedPath.startsWith(baseDir)) {
+            return ResponseEntity.badRequest().build();
+        }
+
+        File file = resolvedPath.toFile();
+        if (!file.exists() || !file.isFile()) {
             return ResponseEntity.notFound().build();
         }
 
@@ -120,7 +126,7 @@ public class ExportController {
      */
     @GetMapping("/records")
     public Result<List<BackupRecord>> getExportRecords() {
-        Long userId = getCurrentUserId();
+        Long userId = UserContextHolder.requireUserId();
         List<BackupRecord> records = exportService.getExportRecords(userId);
         return Result.success(records);
     }
@@ -129,8 +135,8 @@ public class ExportController {
      * 删除导出记录
      */
     @DeleteMapping("/records/{recordId}")
-    public Result<Void> deleteExportRecord(@PathVariable Long recordId) {
-        Long userId = getCurrentUserId();
+    public Result<Void> deleteExportRecord(@PathVariable("recordId") Long recordId) {
+        Long userId = UserContextHolder.requireUserId();
         exportService.deleteExportRecord(recordId, userId);
         return Result.success("删除成功", null);
     }

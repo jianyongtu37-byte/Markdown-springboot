@@ -3,7 +3,7 @@ package com.nineone.markdown.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
-import com.nineone.markdown.common.PageResult;
+import com.nineone.common.result.PageResult;
 import com.nineone.markdown.entity.*;
 import com.nineone.markdown.exception.BizException;
 import com.nineone.markdown.exception.PermissionDeniedException;
@@ -18,6 +18,8 @@ import com.nineone.markdown.vo.TagVO;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.cache.annotation.Cacheable;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -49,10 +51,10 @@ public class InteractionServiceImpl implements InteractionService {
     private final EmailService emailService;
 
     /**
-     * 敏感词列表（可扩展为从数据库加载）
+     * 敏感词列表（默认值，启动后可从数据库动态加载）
      */
-    private static final List<String> SENSITIVE_WORDS = Arrays.asList(
-            "敏感词1", "敏感词2", "广告", "推广", "诈骗", "赌博", "色情", "暴力"
+    private static final List<String> DEFAULT_SENSITIVE_WORDS = Arrays.asList(
+            "诈骗", "赌博", "色情", "暴力", "毒品", "枪支"
     );
 
     /**
@@ -60,6 +62,18 @@ public class InteractionServiceImpl implements InteractionService {
      */
     @Value("${app.url:http://localhost:8080}")
     private String appUrl;
+
+    /**
+     * 评论是否自动通过审核，默认 true（兼容旧行为），生产环境建议设为 false
+     */
+    @Value("${app.comment.auto-approve:true}")
+    private boolean commentAutoApprove;
+
+    /**
+     * 敏感词处理策略：REJECT-拒绝发布, FLAG-标记后提交审核
+     */
+    @Value("${app.comment.sensitive-word-action:REJECT}")
+    private String sensitiveWordAction;
 
     // ==================== 点赞 ====================
 
@@ -78,7 +92,6 @@ public class InteractionServiceImpl implements InteractionService {
         if (existingLike != null) {
             // 已点赞，取消点赞
             articleLikeMapper.deleteById(existingLike.getId());
-            // 使用 SQL 原子更新点赞数，避免并发问题
             articleMapper.updateLikeCount(articleId, -1);
             log.info("用户{}取消点赞文章{}", userId, articleId);
             return false;
@@ -88,13 +101,16 @@ public class InteractionServiceImpl implements InteractionService {
                     .articleId(articleId)
                     .userId(userId)
                     .build();
-            articleLikeMapper.insert(like);
-            // 使用 SQL 原子更新点赞数
+            try {
+                articleLikeMapper.insert(like);
+            } catch (DuplicateKeyException e) {
+                // 并发下唯一约束冲突，说明其他请求已插入，视为已点赞
+                log.info("用户{}点赞文章{}时发生唯一约束冲突，视为已点赞", userId, articleId);
+                return true;
+            }
             articleMapper.updateLikeCount(articleId, 1);
 
             // 发送通知给文章作者（自己点赞自己不通知）
-            // ========== 优化：从 UserContextHolder 获取当前用户昵称，避免查库 ==========
-            // 使用 getArticleById 方法获取文章信息（内部缓存，避免重复查询）
             Article article = getArticleById(articleId);
             if (article != null && !article.getUserId().equals(userId)) {
                 String userName = getCurrentUserNickname(userId);
@@ -124,6 +140,69 @@ public class InteractionServiceImpl implements InteractionService {
         return count != null ? count : 0;
     }
 
+    @Override
+    public PageResult<ArticleVO> getMyLikes(Long userId, Integer pageNum, Integer pageSize) {
+        LambdaQueryWrapper<ArticleLike> queryWrapper = new LambdaQueryWrapper<>();
+        queryWrapper.eq(ArticleLike::getUserId, userId)
+                   .orderByDesc(ArticleLike::getCreateTime);
+
+        Page<ArticleLike> page = new Page<>(pageNum, pageSize);
+        IPage<ArticleLike> likePage = articleLikeMapper.selectPage(page, queryWrapper);
+
+        List<Long> articleIds = likePage.getRecords().stream()
+                .map(ArticleLike::getArticleId)
+                .collect(Collectors.toList());
+
+        List<ArticleVO> articleVOs = new ArrayList<>();
+        if (!articleIds.isEmpty()) {
+            // 使用忽略数据权限的方法查询，避免拦截器按 user_id 过滤掉其他用户的文章
+            List<Article> articles = articleMapper.selectListByIdsIgnorePermission(articleIds);
+            Map<Long, Article> articleMap = articles.stream()
+                    .collect(Collectors.toMap(Article::getId, a -> a));
+
+            List<Long> authorIds = articles.stream()
+                    .map(Article::getUserId).distinct().collect(Collectors.toList());
+            final Map<Long, User> userMap;
+            if (!authorIds.isEmpty()) {
+                List<User> users = userMapper.selectBatchIds(authorIds);
+                userMap = users.stream().collect(Collectors.toMap(User::getId, u -> u));
+            } else {
+                userMap = new HashMap<>();
+            }
+
+            // 只查询实际存在（未删除）的文章的标签
+            List<Long> existingArticleIds = articles.stream()
+                    .map(Article::getId).collect(Collectors.toList());
+            Map<Long, List<TagVO>> articleTagsMap = batchGetTagsByArticleIds(existingArticleIds);
+
+            for (Long articleId : articleIds) {
+                Article article = articleMap.get(articleId);
+                if (article != null) {
+                    User user = userMap.get(article.getUserId());
+                    List<TagVO> tags = articleTagsMap.getOrDefault(articleId, new ArrayList<>());
+                    articleVOs.add(ArticleVO.builder()
+                            .id(article.getId())
+                            .userId(article.getUserId())
+                            .authorName(user != null ? user.getNickname() : null)
+                            .authorAvatar(user != null ? user.getAvatar() : null)
+                            .categoryId(article.getCategoryId())
+                            .title(article.getTitle())
+                            .content(article.getContent())
+                            .summary(article.getSummary())
+                            .status(article.getStatus())
+                            .viewCount(article.getViewCount())
+                            .likeCount(article.getLikeCount())
+                            .tags(tags)
+                            .createTime(article.getCreateTime())
+                            .updateTime(article.getUpdateTime())
+                            .build());
+                }
+            }
+        }
+
+        return PageResult.of(pageNum, pageSize, likePage.getTotal(), articleVOs);
+    }
+
     // ==================== 收藏 ====================
 
     @Override
@@ -145,7 +224,6 @@ public class InteractionServiceImpl implements InteractionService {
         if (existingFavorite != null) {
             // 已收藏，取消收藏
             userFavoriteMapper.deleteById(existingFavorite.getId());
-            // 使用 SQL 原子更新收藏数，避免并发问题
             articleMapper.updateFavoriteCount(articleId, -1);
             log.info("用户{}取消收藏文章{}", userId, articleId);
             return false;
@@ -156,13 +234,16 @@ public class InteractionServiceImpl implements InteractionService {
                     .articleId(articleId)
                     .folderName(folderName)
                     .build();
-            userFavoriteMapper.insert(favorite);
-            // 使用 SQL 原子更新收藏数
+            try {
+                userFavoriteMapper.insert(favorite);
+            } catch (DuplicateKeyException e) {
+                // 并发下唯一约束冲突，说明其他请求已插入，视为已收藏
+                log.info("用户{}收藏文章{}时发生唯一约束冲突，视为已收藏", userId, articleId);
+                return true;
+            }
             articleMapper.updateFavoriteCount(articleId, 1);
 
             // 发送通知给文章作者
-            // ========== 优化：从 UserContextHolder 获取当前用户昵称，避免查库 ==========
-            // 使用 getArticleById 方法获取文章信息（内部缓存，避免重复查询）
             Article article = getArticleById(articleId);
             if (article != null && !article.getUserId().equals(userId)) {
                 String userName = getCurrentUserNickname(userId);
@@ -236,6 +317,7 @@ public class InteractionServiceImpl implements InteractionService {
                             .id(article.getId())
                             .userId(article.getUserId())
                             .authorName(user != null ? user.getNickname() : null)
+                            .authorAvatar(user != null ? user.getAvatar() : null)
                             .categoryId(article.getCategoryId())
                             .title(article.getTitle())
                             .content(article.getContent())
@@ -289,7 +371,7 @@ public class InteractionServiceImpl implements InteractionService {
                 .articleId(articleId)
                 .userId(userId)
                 .content(filteredContent)
-                .status(1); // 默认直接通过（可改为0启用审核）
+                .status(commentAutoApprove ? 1 : 0);
 
         // ========== 优化：缓存父评论，避免重复查询 ==========
         ArticleComment parentComment = null;
@@ -483,9 +565,36 @@ public class InteractionServiceImpl implements InteractionService {
         return articleCommentMapper.findPendingComments();
     }
 
+    @Override
+    public PageResult<CommentVO> getMyComments(Long userId, Integer pageNum, Integer pageSize) {
+        LambdaQueryWrapper<ArticleComment> wrapper = new LambdaQueryWrapper<>();
+        wrapper.eq(ArticleComment::getUserId, userId)
+               .orderByDesc(ArticleComment::getCreateTime);
+        Page<ArticleComment> page = new Page<>(pageNum, pageSize);
+        IPage<ArticleComment> result = articleCommentMapper.selectPage(page, wrapper);
+
+        // 批量查询用户信息，消除 N+1
+        List<Long> userIds = result.getRecords().stream()
+                .map(ArticleComment::getUserId)
+                .distinct()
+                .collect(Collectors.toList());
+        Map<Long, User> userMap = new HashMap<>();
+        if (!userIds.isEmpty()) {
+            List<User> users = userMapper.selectBatchIds(userIds);
+            userMap = users.stream().collect(Collectors.toMap(User::getId, u -> u));
+        }
+
+        final Map<Long, User> finalUserMap = userMap;
+        List<CommentVO> vos = result.getRecords().stream()
+                .map(comment -> convertToCommentVO(comment, finalUserMap))
+                .collect(Collectors.toList());
+        return PageResult.of(pageNum, pageSize, result.getTotal(), vos);
+    }
+
     // ==================== 热门文章 ====================
 
     @Override
+    @Cacheable(value = "hotArticles", key = "#type + '_' + #limit", unless = "#result == null || #result.isEmpty()")
     public List<ArticleVO> getHotArticles(String type, int limit) {
         LambdaQueryWrapper<Article> queryWrapper = new LambdaQueryWrapper<>();
         queryWrapper.eq(Article::getStatus, com.nineone.markdown.enums.ArticleStatusEnum.PUBLIC);
@@ -540,6 +649,7 @@ public class InteractionServiceImpl implements InteractionService {
                             .id(article.getId())
                             .userId(article.getUserId())
                             .authorName(user != null ? user.getNickname() : null)
+                            .authorAvatar(user != null ? user.getAvatar() : null)
                             .categoryId(article.getCategoryId())
                             .title(article.getTitle())
                             .summary(article.getSummary())
@@ -722,7 +832,7 @@ public class InteractionServiceImpl implements InteractionService {
     /**
      * 敏感词过滤
      * @param content 原始内容
-     * @return 过滤后的内容（敏感词替换为***），如果包含严重敏感词则返回null
+     * @return 过滤后的内容（敏感词替换为***），如果包含严重敏感词且策略为REJECT则返回null
      */
     private String filterSensitiveWords(String content) {
         if (content == null || content.isBlank()) {
@@ -730,14 +840,13 @@ public class InteractionServiceImpl implements InteractionService {
         }
 
         String filtered = content;
-        for (String word : SENSITIVE_WORDS) {
+        for (String word : DEFAULT_SENSITIVE_WORDS) {
             if (filtered.contains(word)) {
-                // 严重敏感词直接拒绝
-                if (word.equals("诈骗") || word.equals("赌博") || word.equals("色情") || word.equals("暴力")) {
-                    log.warn("评论包含严重敏感词: {}", word);
+                log.warn("评论包含敏感词: {}", word);
+                if ("REJECT".equalsIgnoreCase(sensitiveWordAction)) {
                     return null;
                 }
-                // 普通敏感词替换为***
+                // FLAG 模式：替换为***，评论进入待审核状态
                 filtered = filtered.replace(word, "***");
             }
         }

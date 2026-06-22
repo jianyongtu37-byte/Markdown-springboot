@@ -33,6 +33,21 @@ public class UserVO {
     private String email;
 
     /**
+     * 角色：ROLE_USER / ROLE_ADMIN
+     */
+    private String role;
+
+    /**
+     * 用户状态：0-禁用, 1-正常
+     */
+    private Integer status;
+
+    /**
+     * 头像URL
+     */
+    private String avatar;
+
+    /**
      * 注册时间
      */
     private LocalDateTime createTime;
@@ -51,4 +66,8 @@ public class UserVO {
      * 最近活动时间
      */
     private LocalDateTime lastActiveTime;
+
+    private Integer followerCount;
+
+    private Integer followingCount;
 }

@@ -2,8 +2,8 @@ package com.nineone.markdown.security;
 
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jwts;
-import io.jsonwebtoken.SignatureAlgorithm;
 import io.jsonwebtoken.security.Keys;
+import jakarta.annotation.PostConstruct;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.stereotype.Component;
@@ -33,6 +33,16 @@ public class JwtUtil {
     private static final String CLAIM_KEY_NICKNAME = "nickname";
     private static final String CLAIM_KEY_AUTHORITIES = "authorities";
 
+    @PostConstruct
+    public void validateConfig() {
+        if (secret == null || secret.isBlank()) {
+            throw new IllegalStateException("JWT_SECRET 环境变量未配置，禁止使用空密钥启动。请设置 JWT_SECRET 环境变量。");
+        }
+        if (secret.length() < 32) {
+            throw new IllegalStateException("JWT_SECRET 长度不足 32 字符，请使用更安全的密钥。");
+        }
+    }
+
     private SecretKey getSigningKey() {
         return Keys.hmacShaKeyFor(secret.getBytes());
     }
@@ -57,7 +67,14 @@ public class JwtUtil {
     @SuppressWarnings("unchecked")
     public List<String> extractAuthorities(String token) {
         final Claims claims = extractAllClaims(token);
-        return claims.get(CLAIM_KEY_AUTHORITIES, List.class);
+        Object raw = claims.get(CLAIM_KEY_AUTHORITIES);
+        if (raw instanceof List) {
+            return (List<String>) raw;
+        }
+        if (raw instanceof String) {
+            return List.of((String) raw);
+        }
+        return null;
     }
 
     public Date extractExpiration(String token) {
@@ -115,7 +132,7 @@ public class JwtUtil {
                 .subject(subject)
                 .issuedAt(new Date(System.currentTimeMillis()))
                 .expiration(new Date(System.currentTimeMillis() + expiration * 1000))
-                .signWith(getSigningKey(), SignatureAlgorithm.HS256)
+                .signWith(getSigningKey())
                 .compact();
     }
 

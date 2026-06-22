@@ -16,11 +16,20 @@ CREATE TABLE IF NOT EXISTS `sys_user` (
     `verification_token` VARCHAR(255) NULL COMMENT '邮箱验证令牌',
     `verification_token_expiry` DATETIME NULL COMMENT '验证令牌过期时间',
     `email_verified_at` DATETIME NULL COMMENT '邮箱验证时间',
+    `role` INT NOT NULL DEFAULT 0 COMMENT '角色：0-普通用户, 1-管理员',
+    `status` TINYINT NOT NULL DEFAULT 1 COMMENT '用户状态：0-禁用, 1-正常',
+    `avatar` VARCHAR(500) NULL COMMENT '头像URL',
+    `deleted` TINYINT(1) DEFAULT 0 COMMENT '软删除标记：0-未删除，1-已删除',
     `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '注册时间',
     `update_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_username` (`username`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户表';
+
+-- 用户表字段补充（用于已存在数据库的升级）
+-- ALTER TABLE sys_user ADD COLUMN IF NOT EXISTS `role` VARCHAR(20) NOT NULL DEFAULT 'ROLE_USER' COMMENT '角色';
+-- ALTER TABLE sys_user ADD COLUMN IF NOT EXISTS `status` TINYINT NOT NULL DEFAULT 1 COMMENT '用户状态';
+-- ALTER TABLE sys_user ADD COLUMN IF NOT EXISTS `avatar` VARCHAR(500) NULL COMMENT '头像URL';
 
 -- 2. 分类表 (category)
 CREATE TABLE IF NOT EXISTS `category` (
@@ -264,3 +273,121 @@ CREATE TABLE IF NOT EXISTS `backup_record` (
     INDEX `idx_status` (`status`),
     INDEX `idx_create_time` (`create_time`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='备份记录表';
+
+-- 文章置顶字段
+ALTER TABLE article ADD COLUMN `is_pinned` TINYINT(1) DEFAULT 0 COMMENT '是否置顶：0-否，1-是';
+ALTER TABLE article ADD COLUMN `pinned_time` DATETIME NULL COMMENT '置顶时间';
+
+-- 用户关注表
+CREATE TABLE IF NOT EXISTS `user_follow` (
+    `id` BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键 ID',
+    `follower_id` BIGINT NOT NULL COMMENT '关注者用户ID',
+    `followee_id` BIGINT NOT NULL COMMENT '被关注者用户ID',
+    `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '关注时间',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_follower_followee` (`follower_id`, `followee_id`),
+    INDEX `idx_follower_id` (`follower_id`),
+    INDEX `idx_followee_id` (`followee_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户关注表';
+
+-- 阅读进度表
+CREATE TABLE IF NOT EXISTS `reading_progress` (
+    `id` BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键 ID',
+    `user_id` BIGINT NOT NULL COMMENT '用户ID',
+    `article_id` BIGINT NOT NULL COMMENT '文章ID',
+    `progress` INT DEFAULT 0 COMMENT '阅读进度百分比(0-100)',
+    `last_position` VARCHAR(100) NULL COMMENT '最后阅读位置',
+    `last_read_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最后阅读时间',
+    `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `update_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_user_article` (`user_id`, `article_id`),
+    INDEX `idx_user_id` (`user_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='阅读进度表';
+
+-- 文章协作者表
+CREATE TABLE IF NOT EXISTS `article_collaborator` (
+    `id` BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键 ID',
+    `article_id` BIGINT NOT NULL COMMENT '文章ID',
+    `user_id` BIGINT NOT NULL COMMENT '协作者用户ID',
+    `permission` VARCHAR(10) NOT NULL DEFAULT 'VIEW' COMMENT '权限：EDIT-编辑, VIEW-查看',
+    `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '添加时间',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_article_user` (`article_id`, `user_id`),
+    INDEX `idx_article_id` (`article_id`),
+    INDEX `idx_user_id` (`user_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='文章协作者表';
+
+-- 文章系列表
+CREATE TABLE IF NOT EXISTS `article_series` (
+    `id` BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键 ID',
+    `user_id` BIGINT NOT NULL COMMENT '创建者用户ID',
+    `title` VARCHAR(100) NOT NULL COMMENT '系列标题',
+    `description` VARCHAR(500) NULL COMMENT '系列描述',
+    `cover_image_url` VARCHAR(500) NULL COMMENT '封面图URL',
+    `article_count` INT DEFAULT 0 COMMENT '包含的文章数量',
+    `is_public` TINYINT(1) DEFAULT 1 COMMENT '是否公开：0-否，1-是',
+    `sort_order` INT DEFAULT 0 COMMENT '排序字段',
+    `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `update_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    PRIMARY KEY (`id`),
+    INDEX `idx_user_id` (`user_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='文章系列表';
+
+-- 16. 知识图谱生成状态表 (knowledge_graph_generation)
+CREATE TABLE IF NOT EXISTS `knowledge_graph_generation` (
+    `id` BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键 ID',
+    `article_id` BIGINT NOT NULL COMMENT '文章 ID',
+    `status` TINYINT NOT NULL DEFAULT 0 COMMENT '状态: 0=pending, 1=generating, 2=success, 3=failed',
+    `node_count` INT DEFAULT 0 COMMENT '节点数量',
+    `edge_count` INT DEFAULT 0 COMMENT '边数量',
+    `error_message` VARCHAR(500) NULL COMMENT '错误信息',
+    `generate_time` DATETIME NULL COMMENT '生成完成时间',
+    `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    PRIMARY KEY (`id`),
+    INDEX `idx_article_id` (`article_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='知识图谱生成状态表';
+
+-- 17. 知识图谱节点表 (knowledge_node)
+CREATE TABLE IF NOT EXISTS `knowledge_node` (
+    `id` BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键 ID',
+    `article_id` BIGINT NOT NULL COMMENT '文章 ID',
+    `name` VARCHAR(200) NOT NULL COMMENT '节点名称',
+    `type` VARCHAR(50) NULL COMMENT '节点类型（概念/实体/主题等）',
+    `description` VARCHAR(500) NULL COMMENT '节点描述',
+    `properties` TEXT NULL COMMENT '节点属性（JSON格式）',
+    `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `update_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    PRIMARY KEY (`id`),
+    INDEX `idx_article_id` (`article_id`),
+    INDEX `idx_name` (`name`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='知识图谱节点表';
+
+-- 18. 知识图谱边表 (knowledge_edge)
+CREATE TABLE IF NOT EXISTS `knowledge_edge` (
+    `id` BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键 ID',
+    `article_id` BIGINT NOT NULL COMMENT '文章 ID',
+    `source_node_id` BIGINT NOT NULL COMMENT '源节点 ID',
+    `target_node_id` BIGINT NOT NULL COMMENT '目标节点 ID',
+    `relation` VARCHAR(100) NOT NULL COMMENT '关系类型',
+    `weight` DOUBLE DEFAULT 1.0 COMMENT '关系权重',
+    `description` VARCHAR(500) NULL COMMENT '关系描述',
+    `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    PRIMARY KEY (`id`),
+    INDEX `idx_article_id` (`article_id`),
+    INDEX `idx_source_node` (`source_node_id`),
+    INDEX `idx_target_node` (`target_node_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='知识图谱边表';
+
+-- 文章系列-文章关联表
+CREATE TABLE IF NOT EXISTS `article_series_item` (
+    `id` BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键 ID',
+    `series_id` BIGINT NOT NULL COMMENT '系列ID',
+    `article_id` BIGINT NOT NULL COMMENT '文章ID',
+    `sort_order` INT DEFAULT 0 COMMENT '排序字段',
+    `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_series_article` (`series_id`, `article_id`),
+    INDEX `idx_series_id` (`series_id`),
+    INDEX `idx_article_id` (`article_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='文章系列-文章关联表';

@@ -102,6 +102,10 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                         
                         if (user != null) {
                             UserContextHolder.setCurrentUser(user);
+                            // 同时填充 common UserContextHolder，确保网关模式和本地模式数据一致
+                            com.nineone.common.context.UserContextHolder.setUserId(user.getId());
+                            com.nineone.common.context.UserContextHolder.setUsername(user.getUsername());
+                            com.nineone.common.context.UserContextHolder.setNickname(user.getNickname());
                             log.debug("UserContextHolder 已缓存用户: id={}, username={}", userId, username);
                         }
                         
@@ -122,6 +126,9 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                             User user = customUserDetails.getUser();
                             if (user != null) {
                                 UserContextHolder.setCurrentUser(user);
+                                com.nineone.common.context.UserContextHolder.setUserId(user.getId());
+                                com.nineone.common.context.UserContextHolder.setUsername(user.getUsername());
+                                com.nineone.common.context.UserContextHolder.setNickname(user.getNickname());
                             }
                         }
                         

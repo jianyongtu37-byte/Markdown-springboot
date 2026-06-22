@@ -20,6 +20,16 @@ public interface ImageService {
     Image uploadImage(MultipartFile file, Long userId, Long articleId);
 
     /**
+     * 上传图片（字节数组）
+     * @param data 图片字节数据
+     * @param filename 文件名
+     * @param contentType MIME类型
+     * @param userId 用户ID
+     * @return 图片实体
+     */
+    Image uploadImageBytes(byte[] data, String filename, String contentType, Long userId);
+
+    /**
      * 获取用户上传的图片列表
      * @param userId 用户ID
      * @return 图片列表

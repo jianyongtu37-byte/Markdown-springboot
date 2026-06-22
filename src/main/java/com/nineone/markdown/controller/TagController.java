@@ -1,6 +1,6 @@
 package com.nineone.markdown.controller;
 
-import com.nineone.markdown.common.Result;
+import com.nineone.common.result.Result;
 import com.nineone.markdown.entity.Tag;
 import com.nineone.markdown.service.TagService;
 import com.nineone.markdown.vo.TagVO;
@@ -36,7 +36,7 @@ public class TagController {
      * 获取标签详情
      */
     @GetMapping("/{id}")
-    public Result<Tag> getTag(@PathVariable Long id) {
+    public Result<Tag> getTag(@PathVariable("id") Long id) {
         Tag tag = tagService.getTag(id);
         if (tag == null) {
             return Result.<Tag>notFound("标签不存在");
@@ -48,25 +48,25 @@ public class TagController {
      * 更新标签
      */
     @PutMapping("/{id}")
-    public Result<Void> updateTag(@PathVariable Long id, @Valid @RequestBody Tag tag) {
+    public Result<Void> updateTag(@PathVariable("id") Long id, @Valid @RequestBody Tag tag) {
         tag.setId(id);
         boolean success = tagService.updateTag(tag);
         if (!success) {
-            return Result.<Void>builder().code(404).message("标签不存在，更新失败").build();
+            return Result.notFound("标签不存在，更新失败");
         }
-        return Result.<Void>builder().code(200).message("标签更新成功").build();
+        return Result.success("标签更新成功", null);
     }
 
     /**
      * 删除标签
      */
     @DeleteMapping("/{id}")
-    public Result<Void> deleteTag(@PathVariable Long id) {
+    public Result<Void> deleteTag(@PathVariable("id") Long id) {
         boolean success = tagService.deleteTag(id);
         if (!success) {
-            return Result.<Void>builder().code(404).message("标签不存在，删除失败").build();
+            return Result.notFound("标签不存在，删除失败");
         }
-        return Result.<Void>builder().code(200).message("标签删除成功").build();
+        return Result.success("标签删除成功", null);
     }
 
     /**
@@ -82,7 +82,7 @@ public class TagController {
      * 搜索标签
      */
     @GetMapping("/search")
-    public Result<List<TagVO>> searchTags(@RequestParam String keyword) {
+    public Result<List<TagVO>> searchTags(@RequestParam(value = "keyword") String keyword) {
         List<TagVO> tags = tagService.searchTags(keyword);
         return Result.success(tags);
     }
@@ -100,7 +100,7 @@ public class TagController {
      * 获取热门标签
      */
     @GetMapping("/popular")
-    public Result<List<TagVO>> getPopularTags(@RequestParam(defaultValue = "10") Integer limit) {
+    public Result<List<TagVO>> getPopularTags(@RequestParam(value = "limit", defaultValue = "10") Integer limit) {
         List<TagVO> tags = tagService.getPopularTags(limit);
         return Result.success(tags);
     }

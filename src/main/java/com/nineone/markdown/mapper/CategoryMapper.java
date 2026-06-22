@@ -28,12 +28,13 @@ public interface CategoryMapper extends BaseMapper<Category> {
     List<Category> selectBatchIdsIgnorePermission(@Param("ids") List<Long> ids);
 
     /**
-     * 检查分类名称是否存在（忽略数据权限检查）
-     * 用于创建/更新分类时检查名称重复，需要查看所有用户的分类
+     * 检查分类名称是否已被当前用户使用（忽略数据权限检查）
+     * 数据库唯一约束是 (name, user_id)，所以只需检查当前用户是否已有同名分类
+     * 用于创建/更新分类时检查名称重复
      */
-    @Select("SELECT * FROM category WHERE name = #{name} LIMIT 1")
+    @Select("SELECT * FROM category WHERE name = #{name} AND user_id = #{userId} LIMIT 1")
     @com.baomidou.mybatisplus.annotation.InterceptorIgnore(dataPermission = "true")
-    Category selectByNameIgnorePermission(@Param("name") String name);
+    Category selectByNameAndUserId(@Param("name") String name, @Param("userId") Long userId);
 
     /**
      * 获取用户最大排序值（包含数据权限检查）

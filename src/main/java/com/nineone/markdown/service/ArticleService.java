@@ -1,7 +1,7 @@
 package com.nineone.markdown.service;
 
 import com.baomidou.mybatisplus.extension.service.IService;
-import com.nineone.markdown.common.PageResult;
+import com.nineone.common.result.PageResult;
 import com.nineone.markdown.dto.ArticleSaveDTO;
 import com.nineone.markdown.entity.Article;
 import com.nineone.markdown.entity.ArticleTimestamp;
@@ -145,4 +145,8 @@ public interface ArticleService extends IService<Article> {
      * @param allowExport 是否允许导出（1-允许，0-禁止）
      */
     void updateAllowExport(Long articleId, Integer allowExport);
+
+    void pinArticle(Long articleId);
+
+    void unpinArticle(Long articleId);
 }

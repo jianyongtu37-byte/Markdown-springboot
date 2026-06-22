@@ -1,6 +1,7 @@
 package com.nineone.markdown.service;
 
 import com.nineone.markdown.service.impl.DeepSeekAiSummaryServiceImpl;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -23,6 +24,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * 
  * 注意：此测试会实际调用DeepSeek API，需要网络连接和有效的API密钥。
  */
+@Disabled("DeepSeek API不稳定，集成测试手动运行")
 @SpringBootTest
 @TestPropertySource(locations = "classpath:application.properties")
 public class DeepSeekAIIntegrationTest {

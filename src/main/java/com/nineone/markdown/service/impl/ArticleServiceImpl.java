@@ -17,6 +17,7 @@ import com.nineone.markdown.enums.ArticleStatusEnum;
 import com.nineone.markdown.exception.AuthenticationException;
 import com.nineone.markdown.exception.BizException;
 import com.nineone.markdown.exception.PermissionDeniedException;
+import com.nineone.markdown.mapper.ArticleCollaboratorMapper;
 import com.nineone.markdown.mapper.ArticleMapper;
 import com.nineone.markdown.mapper.ArticleTagMapper;
 import com.nineone.markdown.mapper.ArticleTimestampMapper;
@@ -25,9 +26,10 @@ import com.nineone.markdown.mapper.CategoryMapper;
 import com.nineone.markdown.mapper.TagMapper;
 import com.nineone.markdown.mapper.UserMapper;
 import com.nineone.markdown.security.CustomUserDetails;
-import com.nineone.markdown.common.PageResult;
+import com.nineone.common.result.PageResult;
 import com.nineone.markdown.service.AiSummaryService;
 import com.nineone.markdown.service.ArticleService;
+import com.nineone.markdown.service.ArticleIndexSyncService;
 import com.nineone.markdown.service.ArticleVersionService;
 import com.nineone.markdown.service.SearchService;
 import com.nineone.markdown.service.VideoParserService;
@@ -39,6 +41,9 @@ import com.nineone.markdown.vo.TagVO;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.BeanUtils;
+import org.springframework.cache.annotation.CacheConfig;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -50,9 +55,11 @@ import org.springframework.util.StringUtils;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -66,6 +73,7 @@ import java.util.stream.Collectors;
 @Service
 @RequiredArgsConstructor
 @Slf4j
+@CacheConfig(cacheNames = "articles")
 public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> implements ArticleService {
 
     private final ArticleMapper articleMapper;
@@ -79,6 +87,8 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
     private final ArticleTimestampMapper articleTimestampMapper;
     private final VideoParserService videoParserService;
     private final ArticleVersionService articleVersionService;
+    private final ArticleCollaboratorMapper articleCollaboratorMapper;
+    private final ArticleIndexSyncService articleIndexSyncService;
 
     // 保底默认分类ID - 永久不可删除
     private static final Long DEFAULT_CATEGORY_ID = 1L;
@@ -150,6 +160,13 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
             indexToElasticsearchAsync(articleId);
         }
 
+        // 同步到 RAG 向量索引（异步，不影响主流程）
+        try {
+            articleIndexSyncService.syncArticleToRAG(article, article.getUserId(), tagNames);
+        } catch (Exception e) {
+            log.warn("触发 RAG 索引同步失败: {}", e.getMessage());
+        }
+
         return articleId;
     }
 
@@ -158,6 +175,7 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
     // =============================================
     @Override
     @Transactional(rollbackFor = Exception.class)
+    @CacheEvict(key = "#article.id")
     public boolean updateArticle(Article article, List<String> tagNames) {
         // 参数验证
         Assert.notNull(article, "文章不能为空");
@@ -226,11 +244,22 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
             deleteFromElasticsearchAsync(article.getId());
         }
 
+        // --------------------------
+        // 第六步：同步 RAG 向量索引（异步，不影响主流程）
+        // --------------------------
+        try {
+            Long currentUserId = getCurrentUserId();
+            articleIndexSyncService.syncArticleToRAG(article, currentUserId, tagNames);
+        } catch (Exception e) {
+            log.warn("触发 RAG 索引同步失败: {}", e.getMessage());
+        }
+
         return true;
     }
 
     @Override
     @Transactional(readOnly = true)
+    @Cacheable(key = "#id")
     public ArticleVO getArticleDetail(Long id) {
         Article article = articleMapper.selectByIdIgnorePermission(id);
         if (article == null) {
@@ -244,20 +273,34 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
         // JwtAuthenticationFilter 中已将当前登录用户缓存到 UserContextHolder
         // 如果当前用户就是文章作者，直接从内存获取，彻底砍掉 userMapper.selectById
         String authorName = null;
+        String nickname = null;
+        String username = null;
+        String authorAvatar = null;
         User cachedUser = UserContextHolder.getCurrentUser();
         if (cachedUser != null && cachedUser.getId().equals(article.getUserId())) {
             // ✅ 当前用户就是作者，零数据库查询！
-            authorName = cachedUser.getNickname();
+            nickname = cachedUser.getNickname();
+            username = cachedUser.getUsername();
+            authorName = (nickname != null && !nickname.isEmpty()) ? nickname : username;
+            authorAvatar = cachedUser.getAvatar();
         } else if (cachedUser != null) {
-            // ✅ 当前用户已登录但不是作者，但我们可以从 CustomUserDetails 获取作者信息吗？
-            // 不行，CustomUserDetails 只存了当前用户的信息。
-            // 这里需要查一次数据库获取作者昵称
+            // ✅ 当前用户已登录但不是作者，查数据库获取作者昵称
             User user = userMapper.selectById(article.getUserId());
-            authorName = user != null ? user.getNickname() : null;
+            if (user != null) {
+                nickname = user.getNickname();
+                username = user.getUsername();
+                authorName = (nickname != null && !nickname.isEmpty()) ? nickname : username;
+                authorAvatar = user.getAvatar();
+            }
         } else {
-            // ✅ 当前用户未登录（匿名访问公开文章），查一次数据库获取作者昵称
+            // ✅ 当前用户未登录（匿名访问公开文章），查数据库获取作者昵称
             User user = userMapper.selectById(article.getUserId());
-            authorName = user != null ? user.getNickname() : null;
+            if (user != null) {
+                nickname = user.getNickname();
+                username = user.getUsername();
+                authorName = (nickname != null && !nickname.isEmpty()) ? nickname : username;
+                authorAvatar = user.getAvatar();
+            }
         }
 
         // 获取分类信息
@@ -274,6 +317,9 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
                 .id(article.getId())
                 .userId(article.getUserId())
                 .authorName(authorName)
+                .authorAvatar(authorAvatar)
+                .nickname(nickname)
+                .username(username)
                 .categoryId(article.getCategoryId())
                 .categoryName(category != null ? category.getName() : null)
                 .title(article.getTitle())
@@ -283,7 +329,12 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
                 .aiStatus(article.getAiStatus())
                 .status(article.getStatus())
                 .viewCount(article.getViewCount())
+                .likeCount(article.getLikeCount())
+                .commentCount(article.getCommentCount())
+                .favoriteCount(article.getFavoriteCount())
                 .allowExport(article.getAllowExport())
+                .isPinned(article.getIsPinned())
+                .pinnedTime(article.getPinnedTime())
                 .tags(tags)
                 .createTime(article.getCreateTime())
                 .updateTime(article.getUpdateTime())
@@ -379,9 +430,18 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
                 continue;
             }
 
-            // 获取作者信息
+            // 获取作者信息（nickname -> username 兜底）
             User user = userMap.get(article.getUserId());
-            String authorName = user != null ? user.getNickname() : null;
+            String authorName = null;
+            String nickname = null;
+            String username = null;
+            String authorAvatar = null;
+            if (user != null) {
+                nickname = user.getNickname();
+                username = user.getUsername();
+                authorName = (nickname != null && !nickname.isEmpty()) ? nickname : username;
+                authorAvatar = user.getAvatar();
+            }
 
             // 获取分类信息
             String categoryName = null;
@@ -398,6 +458,9 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
                     .id(article.getId())
                     .userId(article.getUserId())
                     .authorName(authorName)
+                    .authorAvatar(authorAvatar)
+                    .nickname(nickname)
+                    .username(username)
                     .categoryId(article.getCategoryId())
                     .categoryName(categoryName)
                     .title(article.getTitle())
@@ -407,7 +470,12 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
                     .aiStatus(article.getAiStatus())
                     .status(article.getStatus())
                     .viewCount(article.getViewCount())
+                    .likeCount(article.getLikeCount())
+                    .commentCount(article.getCommentCount())
+                    .favoriteCount(article.getFavoriteCount())
                     .allowExport(article.getAllowExport())
+                    .isPinned(article.getIsPinned())
+                    .pinnedTime(article.getPinnedTime())
                     .tags(tags)
                     .createTime(article.getCreateTime())
                     .updateTime(article.getUpdateTime())
@@ -427,17 +495,23 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
         
         // 构建查询条件
         LambdaQueryWrapper<Article> queryWrapper = new LambdaQueryWrapper<>();
-        
+        queryWrapper.eq(Article::getDeleted, 0);
+
         if (categoryId != null) {
             queryWrapper.eq(Article::getCategoryId, categoryId);
         }
-        
+
+        // 标签过滤：使用子查询在 SQL 层面过滤，确保分页 total 准确
+        if (tagId != null) {
+            queryWrapper.inSql(Article::getId, "SELECT article_id FROM article_tag WHERE tag_id = " + tagId);
+        }
+
         if (status != null) {
             // 将 Integer 状态转换为枚举
             ArticleStatusEnum statusEnum = ArticleStatusEnum.of(status);
             queryWrapper.eq(Article::getStatus, statusEnum);
         }
-        
+
         // isPublic 参数不再使用，因为状态已经包含可见性信息
         // 旧代码兼容：如果 isPublic=1，则只查询公开文章；如果 isPublic=0，则只查询私有文章
         if (isPublic != null) {
@@ -450,43 +524,35 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
                         .eq(Article::getStatus, ArticleStatusEnum.DRAFT));
             }
         }
-        
+
         if (keyword != null && !keyword.trim().isEmpty()) {
             queryWrapper.and(wrapper -> wrapper
                     .like(Article::getTitle, keyword)
                     .or()
                     .like(Article::getContent, keyword));
         }
-        
+
         // 添加权限过滤条件
         addPermissionFilter(queryWrapper);
-        
-        queryWrapper.orderByDesc(Article::getCreateTime);
-        
+
+        queryWrapper.orderByDesc(Article::getIsPinned)
+                .orderByDesc(Article::getPinnedTime)
+                .orderByDesc(Article::getCreateTime);
+
         // 使用MyBatis-Plus分页查询（忽略数据权限拦截器，因为权限已在Service层手动添加）
         Page<Article> page = new Page<>(pageNum, pageSize);
         IPage<Article> articlePage = articleMapper.selectPageIgnorePermission(page, queryWrapper);
-        
+
         // 使用批量查询获取文章VO列表
         List<ArticleVO> articleVOs = batchGetArticleVOs(articlePage.getRecords());
-        
-        // 如果指定了标签过滤，进行过滤
-        List<ArticleVO> result;
-        if (tagId != null) {
-            result = articleVOs.stream()
-                    .filter(vo -> vo.getTags().stream()
-                            .anyMatch(tag -> tag.getId().equals(tagId)))
-                    .collect(Collectors.toList());
-        } else {
-            result = articleVOs;
-        }
-        
-        // 构建分页结果
-        return PageResult.of(pageNum, pageSize, articlePage.getTotal(), result);
+
+        // 构建分页结果（标签过滤已在 SQL 层面完成）
+        return PageResult.of(pageNum, pageSize, articlePage.getTotal(), articleVOs);
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
+    @CacheEvict(key = "#id")
     public boolean deleteArticle(Long id) {
         // 1. 权限校验：检查当前用户是否有权限删除这篇文章
         checkArticlePermission(id);
@@ -502,6 +568,13 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
         // 4. 从Elasticsearch删除索引
         if (deleteCount > 0) {
             deleteFromElasticsearchAsync(id);
+            // 从 RAG 向量索引中删除（异步）
+            try {
+                Long userId = UserContextHolder.getUserId();
+                articleIndexSyncService.removeArticleFromRAG(id, userId);
+            } catch (Exception e) {
+                log.warn("触发 RAG 索引删除失败: {}", e.getMessage());
+            }
         }
         
         return deleteCount > 0;
@@ -521,7 +594,7 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
      * （调用方已通过大连表查询确认文章存在，此处信任上游传下来的 ID）
      * 后续优化方向：接入 Redis 缓存阅读量，定时批量刷回数据库
      */
-    @Async("aiTaskExecutor")
+    @Async("quickExecutor")
     public void increaseViewCountAsync(Long id) {
         try {
             // 使用 SQL 原子更新，避免并发问题
@@ -572,7 +645,7 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
      * @param articleId 文章ID
      * @param content 文章内容
      */
-    @Async("aiTaskExecutor")
+    @Async("aiExecutor")
     public void generateAiSummaryAsync(Long articleId, String content) {
         try {
             log.info("开始异步生成AI摘要，文章ID: {}", articleId);
@@ -642,7 +715,7 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
      * 异步索引文章到Elasticsearch
      * @param articleId 文章ID
      */
-    @Async("aiTaskExecutor")
+    @Async("esExecutor")
     public void indexToElasticsearchAsync(Long articleId) {
         try {
             log.info("开始异步索引文章到Elasticsearch，文章ID: {}", articleId);
@@ -685,13 +758,15 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
     private void checkArticlePermission(Long articleId) {
         Long currentUserId = getCurrentUserId();
         Article article = articleMapper.selectByIdIgnorePermission(articleId);
-        
+
         if (article == null) {
+            log.warn("文章不存在, articleId={}, currentUserId={}", articleId, currentUserId);
             throw new RuntimeException("文章不存在");
         }
-        
-        if (!article.getUserId().equals(currentUserId)) {
-            throw new PermissionDeniedException("越权操作：您没有权限修改他人的文章");
+
+        if (!article.getUserId().equals(currentUserId)
+                && articleCollaboratorMapper.hasEditPermission(articleId, currentUserId) == 0) {
+            throw new PermissionDeniedException("越权操作：您没有权限修改此文章");
         }
     }
 
@@ -699,7 +774,7 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
      * 异步从Elasticsearch删除文章索引
      * @param articleId 文章ID
      */
-    @Async("aiTaskExecutor")
+    @Async("esExecutor")
     public void deleteFromElasticsearchAsync(Long articleId) {
         try {
             log.info("开始异步从Elasticsearch删除文章索引，文章ID: {}", articleId);
@@ -720,19 +795,18 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
      * @throws PermissionDeniedException 如果用户没有访问权限
      */
     private void checkArticleAccessPermission(Article article) {
-        // 如果文章是公开可见的，所有人都可以访问
         if (article.getStatus() != null && article.getStatus().canPublicAccess()) {
             return;
         }
 
-        // 否则，只有文章作者本人可以访问
         try {
             Long currentUserId = getCurrentUserId();
-            if (!article.getUserId().equals(currentUserId)) {
-                throw new PermissionDeniedException("您没有权限访问此文章");
+            if (article.getUserId().equals(currentUserId)
+                    || articleCollaboratorMapper.isCollaborator(article.getId(), currentUserId) > 0) {
+                return;
             }
+            throw new PermissionDeniedException("您没有权限访问此文章");
         } catch (AuthenticationException e) {
-            // 如果用户未登录，也没有权限访问非公开文章
             throw new PermissionDeniedException("请登录后访问此文章");
         }
     }
@@ -743,18 +817,15 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
      */
     private void addPermissionFilter(LambdaQueryWrapper<Article> queryWrapper) {
         try {
-            // 获取当前登录用户ID
             Long currentUserId = getCurrentUserId();
-            
-            // 权限规则：
-            // 1. 公开可见的文章（PUBLIC状态）所有人都可以访问
-            // 2. 当前用户自己的文章（无论状态如何）都可以访问
+
             queryWrapper.and(wrapper -> wrapper
                     .eq(Article::getStatus, ArticleStatusEnum.PUBLIC)
                     .or()
-                    .eq(Article::getUserId, currentUserId));
+                    .eq(Article::getUserId, currentUserId)
+                    .or()
+                    .apply("id IN (SELECT article_id FROM article_collaborator WHERE user_id = {0})", currentUserId));
         } catch (AuthenticationException e) {
-            // 如果用户未登录，只能查看公开可见的文章
             queryWrapper.eq(Article::getStatus, ArticleStatusEnum.PUBLIC);
         }
     }
@@ -771,18 +842,24 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
         
         // 构建查询条件
         LambdaQueryWrapper<Article> queryWrapper = new LambdaQueryWrapper<>();
-        queryWrapper.eq(Article::getUserId, currentUserId);
-        
+        queryWrapper.eq(Article::getUserId, currentUserId)
+                .eq(Article::getDeleted, 0);
+
         if (categoryId != null) {
             queryWrapper.eq(Article::getCategoryId, categoryId);
         }
-        
+
+        // 标签过滤：使用子查询在 SQL 层面过滤，确保分页 total 准确
+        if (tagId != null) {
+            queryWrapper.inSql(Article::getId, "SELECT article_id FROM article_tag WHERE tag_id = " + tagId);
+        }
+
         if (status != null) {
             // 将 Integer 状态转换为枚举
             ArticleStatusEnum statusEnum = ArticleStatusEnum.of(status);
             queryWrapper.eq(Article::getStatus, statusEnum);
         }
-        
+
         // isPublic 参数不再使用，因为状态已经包含可见性信息
         if (isPublic != null) {
             if (isPublic == 1) {
@@ -794,36 +871,27 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
                         .eq(Article::getStatus, ArticleStatusEnum.DRAFT));
             }
         }
-        
+
         if (keyword != null && !keyword.trim().isEmpty()) {
             queryWrapper.and(wrapper -> wrapper
                     .like(Article::getTitle, keyword)
                     .or()
                     .like(Article::getContent, keyword));
         }
-        
-        queryWrapper.orderByDesc(Article::getCreateTime);
-        
+
+        queryWrapper.orderByDesc(Article::getIsPinned)
+                .orderByDesc(Article::getPinnedTime)
+                .orderByDesc(Article::getCreateTime);
+
         // 使用MyBatis-Plus分页查询（忽略数据权限拦截器，因为权限已在Service层手动添加）
         Page<Article> page = new Page<>(pageNum, pageSize);
         IPage<Article> articlePage = articleMapper.selectPageIgnorePermission(page, queryWrapper);
-        
+
         // 使用批量查询获取文章VO列表
         List<ArticleVO> articleVOs = batchGetArticleVOs(articlePage.getRecords());
-        
-        // 如果指定了标签过滤，进行过滤
-        List<ArticleVO> result;
-        if (tagId != null) {
-            result = articleVOs.stream()
-                    .filter(vo -> vo.getTags().stream()
-                            .anyMatch(tag -> tag.getId().equals(tagId)))
-                    .collect(Collectors.toList());
-        } else {
-            result = articleVOs;
-        }
-        
-        // 构建分页结果
-        return PageResult.of(pageNum, pageSize, articlePage.getTotal(), result);
+
+        // 构建分页结果（标签过滤已在 SQL 层面完成）
+        return PageResult.of(pageNum, pageSize, articlePage.getTotal(), articleVOs);
     }
 
     @Override
@@ -842,36 +910,32 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
         if (categoryId != null) {
             queryWrapper.eq(Article::getCategoryId, categoryId);
         }
-        
+
+        // 标签过滤：使用子查询在 SQL 层面过滤，确保分页 total 准确
+        if (tagId != null) {
+            queryWrapper.inSql(Article::getId, "SELECT article_id FROM article_tag WHERE tag_id = " + tagId);
+        }
+
         if (keyword != null && !keyword.trim().isEmpty()) {
             queryWrapper.and(wrapper -> wrapper
                     .like(Article::getTitle, keyword)
                     .or()
                     .like(Article::getContent, keyword));
         }
-        
-        queryWrapper.orderByDesc(Article::getCreateTime);
-        
+
+        queryWrapper.orderByDesc(Article::getIsPinned)
+                .orderByDesc(Article::getPinnedTime)
+                .orderByDesc(Article::getCreateTime);
+
         // 使用MyBatis-Plus分页查询
         Page<Article> page = new Page<>(pageNum, pageSize);
         IPage<Article> articlePage = articleMapper.selectPage(page, queryWrapper);
-        
+
         // 使用批量查询获取文章VO列表
         List<ArticleVO> articleVOs = batchGetArticleVOs(articlePage.getRecords());
-        
-        // 如果指定了标签过滤，进行过滤
-        List<ArticleVO> result;
-        if (tagId != null) {
-            result = articleVOs.stream()
-                    .filter(vo -> vo.getTags().stream()
-                            .anyMatch(tag -> tag.getId().equals(tagId)))
-                    .collect(Collectors.toList());
-        } else {
-            result = articleVOs;
-        }
-        
-        // 构建分页结果
-        return PageResult.of(pageNum, pageSize, articlePage.getTotal(), result);
+
+        // 构建分页结果（标签过滤已在 SQL 层面完成）
+        return PageResult.of(pageNum, pageSize, articlePage.getTotal(), articleVOs);
     }
 
     @Override
@@ -943,55 +1007,106 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
     private Long resolveCategoryId(Long inputCategoryId) {
         // 情况1：传入为空
         if (inputCategoryId == null) {
-            return DEFAULT_CATEGORY_ID;
+            return ensureDefaultCategoryExists();
         }
-        
+
         // 情况2：传入ID不存在于数据库
         Category category = categoryMapper.selectById(inputCategoryId);
         if (category == null) {
             log.warn("传入的分类ID不存在: {}, 自动兜底到默认分类", inputCategoryId);
-            return DEFAULT_CATEGORY_ID;
+            return ensureDefaultCategoryExists();
         }
-        
+
         // 情况3：正常有效ID
         return inputCategoryId;
+    }
+
+    /**
+     * 确保默认分类存在，不存在则自动创建（防止外键约束失败）
+     */
+    private Long ensureDefaultCategoryExists() {
+        Category defaultCategory = categoryMapper.selectById(DEFAULT_CATEGORY_ID);
+        if (defaultCategory == null) {
+            defaultCategory = Category.builder()
+                    .id(DEFAULT_CATEGORY_ID)
+                    .name("未分类")
+                    .description("系统默认分类，用于兜底未归类的文章")
+                    .sortOrder(0)
+                    .isDefault(true)
+                    .build();
+            categoryMapper.insert(defaultCategory);
+            log.info("默认分类不存在，已自动创建: id={}, name=未分类", DEFAULT_CATEGORY_ID);
+        }
+        return DEFAULT_CATEGORY_ID;
     }
 
     // =============================================
     // ✅ 标签名称解析器 (即写即存)
     // 传入标签名称列表，返回标签ID列表，不存在则自动创建
+    // 优化：批量查询已存在标签 + 并发安全保护 + 输入校验
     // =============================================
+    private static final int MAX_TAGS_PER_ARTICLE = 20;
+
     private List<Long> resolveTagIds(List<String> tagNames) {
+        if (tagNames == null || tagNames.isEmpty()) {
+            return List.of();
+        }
+
+        // 第一步：清洗输入 — 去空、去重、trim、小写、长度校验
+        List<String> cleanNames = tagNames.stream()
+                .filter(StringUtils::hasText)
+                .map(name -> name.trim().toLowerCase())
+                .filter(name -> {
+                    if (name.length() > 50) {
+                        log.warn("标签名过长(>50字符)，已跳过: {}", name.substring(0, Math.min(name.length(), 30)));
+                        return false;
+                    }
+                    return true;
+                })
+                .distinct()
+                .collect(Collectors.toList());
+
+        if (cleanNames.isEmpty()) {
+            return List.of();
+        }
+
+        // 第二步：数量上限保护
+        if (cleanNames.size() > MAX_TAGS_PER_ARTICLE) {
+            log.warn("文章标签数量超过上限({})，只保留前{}个", MAX_TAGS_PER_ARTICLE, MAX_TAGS_PER_ARTICLE);
+            cleanNames = cleanNames.subList(0, MAX_TAGS_PER_ARTICLE);
+        }
+
+        // 第三步：批量查询已存在的标签（一次 SQL 替代 N 次查询）
+        LambdaQueryWrapper<Tag> queryWrapper = new LambdaQueryWrapper<>();
+        queryWrapper.in(Tag::getName, cleanNames);
+        List<Tag> existingTags = tagMapper.selectList(queryWrapper);
+        Map<String, Long> nameToId = existingTags.stream()
+                .collect(Collectors.toMap(Tag::getName, Tag::getId, (a, b) -> a));
+
+        // 第四步：逐标签处理 — 已存在直接取ID，不存在则创建（带并发保护）
         List<Long> result = new ArrayList<>();
-        
-        for (String tagName : tagNames) {
-            // 过滤空字符串
-            if (!StringUtils.hasText(tagName)) {
-                continue;
-            }
-            
-            // 去除前后空格并统一小写
-            String cleanTagName = tagName.trim().toLowerCase();
-            
-            // 查询标签是否已存在
-            LambdaQueryWrapper<Tag> queryWrapper = new LambdaQueryWrapper<>();
-            queryWrapper.eq(Tag::getName, cleanTagName);
-            Tag existTag = tagMapper.selectOne(queryWrapper);
-            
-            if (existTag != null) {
-                // 标签已存在，直接使用ID
-                result.add(existTag.getId());
+        for (String cleanName : cleanNames) {
+            Long existingId = nameToId.get(cleanName);
+            if (existingId != null) {
+                result.add(existingId);
             } else {
-                // 标签不存在，自动创建新标签
-                Tag newTag = Tag.builder()
-                        .name(cleanTagName)
-                        .build();
-                tagMapper.insert(newTag);
-                result.add(newTag.getId());
-                log.info("自动创建新标签: [{}] ID={}", cleanTagName, newTag.getId());
+                try {
+                    Tag newTag = Tag.builder().name(cleanName).build();
+                    tagMapper.insert(newTag);
+                    result.add(newTag.getId());
+                    log.info("自动创建新标签: [{}] ID={}", cleanName, newTag.getId());
+                } catch (org.springframework.dao.DuplicateKeyException e) {
+                    // 并发场景：其他线程刚好创建了同名标签，重新查询获取ID
+                    log.debug("标签并发创建冲突，回退查询: [{}]", cleanName);
+                    Tag existTag = tagMapper.selectOne(
+                            new LambdaQueryWrapper<Tag>().eq(Tag::getName, cleanName));
+                    if (existTag != null) {
+                        result.add(existTag.getId());
+                    }
+                }
             }
         }
-        
+
         return result;
     }
 
@@ -1014,11 +1129,21 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
         // 检查文章可见性：公开文章所有人可见，非公开文章仅作者可见
         checkArticleAccessPermission(article);
 
+        // 作者名称兜底：nickname 为空时使用 username（与 getArticleDetail 逻辑一致）
+        String authorName = dto.getAuthorName();
+        if (authorName == null || authorName.isEmpty()) {
+            User author = userMapper.selectById(dto.getUserId());
+            if (author != null) {
+                authorName = author.getUsername();
+            }
+        }
+
         // 构建 ArticleDetailVO
         ArticleDetailVO vo = ArticleDetailVO.builder()
                 .id(dto.getId())
                 .userId(dto.getUserId())
-                .authorName(dto.getAuthorName())
+                .authorName(authorName)
+                .authorAvatar(dto.getAuthorAvatar())
                 .categoryId(dto.getCategoryId())
                 .categoryName(dto.getCategoryName())
                 .title(dto.getTitle())
@@ -1029,6 +1154,8 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
                 .status(dto.getStatus())
                 .viewCount(dto.getViewCount())
                 .allowExport(dto.getAllowExport())
+                .isPinned(dto.getIsPinned())
+                .pinnedTime(dto.getPinnedTime())
                 .likeCount(dto.getLikeCount())
                 .commentCount(dto.getCommentCount())
                 .favoriteCount(dto.getFavoriteCount())
@@ -1147,6 +1274,18 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
 
         // 重建时间戳索引
         rebuildTimestamps(article.getId(), dto.getContent());
+
+        // 同步到 RAG 向量索引（异步，不影响主流程）
+        try {
+            List<String> tagNamesForSync = (dto.getTagIds() != null && !dto.getTagIds().isEmpty())
+                    ? tagMapper.selectBatchIds(dto.getTagIds()).stream()
+                        .map(com.nineone.markdown.entity.Tag::getName)
+                        .collect(java.util.stream.Collectors.toList())
+                    : null;
+            articleIndexSyncService.syncArticleToRAG(article, userId, tagNamesForSync);
+        } catch (Exception e) {
+            log.warn("触发 RAG 索引同步失败: {}", e.getMessage());
+        }
     }
 
     @Override
@@ -1205,6 +1344,41 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
         }
         
         log.debug("重建时间戳索引完成，文章ID: {}, 提取到 {} 个时间戳", articleId, timestamps.size());
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void pinArticle(Long articleId) {
+        checkArticlePermission(articleId);
+
+        LambdaQueryWrapper<Article> wrapper = new LambdaQueryWrapper<>();
+        wrapper.eq(Article::getUserId, getCurrentUserId())
+                .eq(Article::getIsPinned, 1)
+                .eq(Article::getDeleted, 0);
+        long pinnedCount = articleMapper.selectCount(wrapper);
+        if (pinnedCount >= 3) {
+            throw new BizException("最多只能置顶3篇文章");
+        }
+
+        Article updateEntity = new Article();
+        updateEntity.setId(articleId);
+        updateEntity.setIsPinned(1);
+        updateEntity.setPinnedTime(LocalDateTime.now());
+        articleMapper.updateById(updateEntity);
+        log.info("文章已置顶, articleId={}, userId={}", articleId, getCurrentUserId());
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void unpinArticle(Long articleId) {
+        checkArticlePermission(articleId);
+
+        Article updateEntity = new Article();
+        updateEntity.setId(articleId);
+        updateEntity.setIsPinned(0);
+        updateEntity.setPinnedTime(null);
+        articleMapper.updateById(updateEntity);
+        log.info("文章已取消置顶, articleId={}", articleId);
     }
 
     @Override

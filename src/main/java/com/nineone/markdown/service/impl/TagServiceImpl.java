@@ -11,6 +11,8 @@ import com.nineone.markdown.service.TagService;
 import com.nineone.markdown.vo.TagVO;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.Assert;
@@ -31,11 +33,17 @@ public class TagServiceImpl extends ServiceImpl<TagMapper, Tag> implements TagSe
 
     @Override
     @Transactional(rollbackFor = Exception.class)
+    @CacheEvict(value = "tags", allEntries = true)
     public Long createTag(Tag tag) {
         // 参数验证
         Assert.notNull(tag, "标签不能为空");
         Assert.hasText(tag.getName(), "标签名称不能为空");
-        
+
+        // 名称归一化：去除前后空格并统一小写（与 resolveTagIds 保持一致）
+        String normalizedName = tag.getName().trim().toLowerCase();
+        Assert.isTrue(normalizedName.length() <= 50, "标签名称不能超过50个字符");
+        tag.setName(normalizedName);
+
         // 检查标签名称是否已存在
         LambdaQueryWrapper<Tag> queryWrapper = new LambdaQueryWrapper<>();
         queryWrapper.eq(Tag::getName, tag.getName());
@@ -43,7 +51,7 @@ public class TagServiceImpl extends ServiceImpl<TagMapper, Tag> implements TagSe
         if (existingTag != null) {
             throw new IllegalArgumentException("标签名称已存在");
         }
-        
+
         // 保存标签
         tagMapper.insert(tag);
         return tag.getId();
@@ -57,6 +65,7 @@ public class TagServiceImpl extends ServiceImpl<TagMapper, Tag> implements TagSe
 
     @Override
     @Transactional(rollbackFor = Exception.class)
+    @CacheEvict(value = "tags", allEntries = true)
     public boolean updateTag(Tag tag) {
         Assert.notNull(tag, "标签不能为空");
         Assert.notNull(tag.getId(), "标签ID不能为空");
@@ -67,7 +76,13 @@ public class TagServiceImpl extends ServiceImpl<TagMapper, Tag> implements TagSe
             return false;
         }
         
-        // 如果名称有变化，检查新名称是否已存在
+        // 如果名称有变化，先归一化再检查新名称是否已存在
+        String newName = tag.getName();
+        if (newName != null) {
+            newName = newName.trim().toLowerCase();
+            Assert.isTrue(newName.length() <= 50, "标签名称不能超过50个字符");
+            tag.setName(newName);
+        }
         if (!existingTag.getName().equals(tag.getName())) {
             LambdaQueryWrapper<Tag> queryWrapper = new LambdaQueryWrapper<>();
             queryWrapper.eq(Tag::getName, tag.getName());
@@ -84,6 +99,7 @@ public class TagServiceImpl extends ServiceImpl<TagMapper, Tag> implements TagSe
 
     @Override
     @Transactional(rollbackFor = Exception.class)
+    @CacheEvict(value = "tags", allEntries = true)
     public boolean deleteTag(Long id) {
         Assert.notNull(id, "标签ID不能为空");
         
@@ -107,6 +123,7 @@ public class TagServiceImpl extends ServiceImpl<TagMapper, Tag> implements TagSe
     }
 
     @Override
+    @Cacheable(value = "tags", key = "'allTags'", unless = "#result == null || #result.isEmpty()")
     public List<TagVO> getAllTags() {
         LambdaQueryWrapper<Tag> queryWrapper = new LambdaQueryWrapper<>();
         queryWrapper.orderByAsc(Tag::getName);
@@ -130,46 +147,23 @@ public class TagServiceImpl extends ServiceImpl<TagMapper, Tag> implements TagSe
     }
 
     @Override
+    @Cacheable(value = "tags", key = "'popular_' + #limit", unless = "#result == null || #result.isEmpty()")
     public List<TagVO> getPopularTags(Integer limit) {
         Assert.notNull(limit, "数量限制不能为空");
         Assert.isTrue(limit > 0, "数量限制必须大于0");
-        
-        // 获取所有标签
-        List<TagVO> allTags = getAllTags();
-        
-        // 为每个标签统计使用次数
-        List<TagWithUsage> tagWithUsages = new java.util.ArrayList<>();
-        for (TagVO tagVO : allTags) {
-            LambdaQueryWrapper<ArticleTag> articleTagQuery = new LambdaQueryWrapper<>();
-            articleTagQuery.eq(ArticleTag::getTagId, tagVO.getId());
-            Long useCount = articleTagMapper.selectCount(articleTagQuery);
-            
-            Tag tag = new Tag();
-            tag.setId(tagVO.getId());
-            tag.setName(tagVO.getName());
-            tag.setCreateTime(tagVO.getCreateTime());
-            
-            tagWithUsages.add(new TagWithUsage(tag, useCount != null ? useCount : 0L));
-        }
-        
-        // 按使用次数降序排序
-        tagWithUsages.sort((a, b) -> Long.compare(b.useCount, a.useCount));
-        
-        // 获取前limit个标签
-        List<Tag> popularTags = new java.util.ArrayList<>();
-        for (int i = 0; i < Math.min(limit, tagWithUsages.size()); i++) {
-            popularTags.add(tagWithUsages.get(i).tag);
-        }
-        
-        // 转换为VO
-        List<TagVO> result = new java.util.ArrayList<>();
-        for (Tag tag : popularTags) {
-            result.add(convertToVO(tag));
-        }
-        return result;
+
+        // 使用 LEFT JOIN + GROUP BY 一次查询获取热门标签，避免 N+1 问题
+        List<java.util.Map<String, Object>> rows = tagMapper.selectPopularTags(limit);
+
+        return rows.stream().map(row -> TagVO.builder()
+                .id((Long) row.get("id"))
+                .name((String) row.get("name"))
+                .createTime((java.time.LocalDateTime) row.get("create_time"))
+                .build()).collect(Collectors.toList());
     }
 
     @Override
+    @Cacheable(value = "tags", key = "'names'", unless = "#result == null || #result.isEmpty()")
     public List<String> getTagNames() {
         LambdaQueryWrapper<Tag> queryWrapper = new LambdaQueryWrapper<>();
         queryWrapper.orderByAsc(Tag::getName);
@@ -180,20 +174,6 @@ public class TagServiceImpl extends ServiceImpl<TagMapper, Tag> implements TagSe
                 .map(Tag::getName)
                 .collect(Collectors.toList());
     }
-    
-    /**
-     * 内部类：标签使用统计
-     */
-    private static class TagWithUsage {
-        Tag tag;
-        Long useCount;
-        
-        TagWithUsage(Tag tag, Long useCount) {
-            this.tag = tag;
-            this.useCount = useCount;
-        }
-    }
-
     /**
      * 将Tag实体转换为TagVO
      */

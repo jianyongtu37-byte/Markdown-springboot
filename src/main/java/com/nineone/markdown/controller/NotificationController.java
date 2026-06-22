@@ -1,15 +1,12 @@
 package com.nineone.markdown.controller;
 
-import com.nineone.markdown.common.Result;
+import com.nineone.common.result.Result;
 import com.nineone.markdown.entity.Notification;
-import com.nineone.markdown.exception.AuthenticationException;
-import com.nineone.markdown.security.CustomUserDetails;
 import com.nineone.markdown.service.NotificationService;
 import com.nineone.markdown.service.SseService;
+import com.nineone.markdown.util.UserContextHolder;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.MediaType;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
@@ -28,21 +25,6 @@ public class NotificationController {
     private final SseService sseService;
 
     /**
-     * 获取当前登录用户的ID
-     */
-    private Long getCurrentUserId() {
-        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-        if (authentication == null || !authentication.isAuthenticated()) {
-            throw new AuthenticationException("用户未认证", "UNAUTHENTICATED");
-        }
-        Object principal = authentication.getPrincipal();
-        if (principal instanceof CustomUserDetails) {
-            return ((CustomUserDetails) principal).getId();
-        }
-        throw new AuthenticationException("用户未登录或登录已过期", "TOKEN_EXPIRED");
-    }
-
-    /**
      * SSE 订阅接口 - 建立实时通知连接
      * 前端通过 EventSource 连接此接口，即可实时接收新通知推送
      * <p>
@@ -53,7 +35,7 @@ public class NotificationController {
     public SseEmitter subscribe() {
         // 先完成认证校验，确保用户已登录
         // 如果认证失败会抛出 AuthenticationException，此时响应尚未提交
-        Long userId = getCurrentUserId();
+        Long userId = UserContextHolder.requireUserId();
         return sseService.connect(userId);
     }
 
@@ -62,7 +44,7 @@ public class NotificationController {
      */
     @GetMapping("/unread")
     public Result<List<Notification>> getUnreadNotifications() {
-        Long userId = getCurrentUserId();
+        Long userId = UserContextHolder.requireUserId();
         List<Notification> notifications = notificationService.getUnreadNotifications(userId);
         return Result.success(notifications);
     }
@@ -72,7 +54,7 @@ public class NotificationController {
      */
     @GetMapping
     public Result<List<Notification>> getAllNotifications() {
-        Long userId = getCurrentUserId();
+        Long userId = UserContextHolder.requireUserId();
         List<Notification> notifications = notificationService.getAllNotifications(userId);
         return Result.success(notifications);
     }
@@ -82,7 +64,7 @@ public class NotificationController {
      */
     @GetMapping("/unread/count")
     public Result<Map<String, Object>> getUnreadCount() {
-        Long userId = getCurrentUserId();
+        Long userId = UserContextHolder.requireUserId();
         int count = notificationService.getUnreadCount(userId);
         return Result.success(Map.of("count", count));
     }
@@ -91,8 +73,8 @@ public class NotificationController {
      * 标记通知为已读
      */
     @PutMapping("/{notificationId}/read")
-    public Result<Void> markAsRead(@PathVariable Long notificationId) {
-        Long userId = getCurrentUserId();
+    public Result<Void> markAsRead(@PathVariable("notificationId") Long notificationId) {
+        Long userId = UserContextHolder.requireUserId();
         notificationService.markAsRead(notificationId, userId);
         return Result.success("已标记为已读", null);
     }
@@ -102,7 +84,7 @@ public class NotificationController {
      */
     @PutMapping("/read-all")
     public Result<Void> markAllAsRead() {
-        Long userId = getCurrentUserId();
+        Long userId = UserContextHolder.requireUserId();
         notificationService.markAllAsRead(userId);
         return Result.success("所有通知已标记为已读", null);
     }
@@ -111,8 +93,8 @@ public class NotificationController {
      * 删除通知
      */
     @DeleteMapping("/{notificationId}")
-    public Result<Void> deleteNotification(@PathVariable Long notificationId) {
-        Long userId = getCurrentUserId();
+    public Result<Void> deleteNotification(@PathVariable("notificationId") Long notificationId) {
+        Long userId = UserContextHolder.requireUserId();
         notificationService.deleteNotification(notificationId, userId);
         return Result.success("通知已删除", null);
     }

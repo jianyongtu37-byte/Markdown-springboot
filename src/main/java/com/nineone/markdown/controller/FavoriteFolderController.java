@@ -1,13 +1,10 @@
 package com.nineone.markdown.controller;
 
-import com.nineone.markdown.common.Result;
-import com.nineone.markdown.exception.AuthenticationException;
-import com.nineone.markdown.security.CustomUserDetails;
+import com.nineone.common.result.Result;
 import com.nineone.markdown.service.FavoriteFolderService;
+import com.nineone.markdown.util.UserContextHolder;
 import com.nineone.markdown.vo.FavoriteFolderVO;
 import lombok.RequiredArgsConstructor;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -24,26 +21,11 @@ public class FavoriteFolderController {
     private final FavoriteFolderService favoriteFolderService;
 
     /**
-     * 获取当前登录用户的ID
-     */
-    private Long getCurrentUserId() {
-        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-        if (authentication == null || !authentication.isAuthenticated()) {
-            throw new AuthenticationException("用户未认证", "UNAUTHENTICATED");
-        }
-        Object principal = authentication.getPrincipal();
-        if (principal instanceof CustomUserDetails) {
-            return ((CustomUserDetails) principal).getId();
-        }
-        throw new AuthenticationException("用户未登录或登录已过期", "TOKEN_EXPIRED");
-    }
-
-    /**
      * 创建收藏夹
      */
     @PostMapping
     public Result<FavoriteFolderVO> createFolder(@RequestBody Map<String, String> body) {
-        Long userId = getCurrentUserId();
+        Long userId = UserContextHolder.requireUserId();
         String name = body.get("name");
         String description = body.get("description");
         FavoriteFolderVO folder = favoriteFolderService.createFolder(userId, name, description);
@@ -55,7 +37,7 @@ public class FavoriteFolderController {
      */
     @GetMapping
     public Result<List<FavoriteFolderVO>> getMyFolders() {
-        Long userId = getCurrentUserId();
+        Long userId = UserContextHolder.requireUserId();
         List<FavoriteFolderVO> folders = favoriteFolderService.getMyFolders(userId);
         return Result.success(folders);
     }
@@ -64,9 +46,9 @@ public class FavoriteFolderController {
      * 重命名收藏夹
      */
     @PutMapping("/{folderId}")
-    public Result<FavoriteFolderVO> renameFolder(@PathVariable Long folderId,
+    public Result<FavoriteFolderVO> renameFolder(@PathVariable("folderId") Long folderId,
                                                   @RequestBody Map<String, String> body) {
-        Long userId = getCurrentUserId();
+        Long userId = UserContextHolder.requireUserId();
         String newName = body.get("name");
         FavoriteFolderVO folder = favoriteFolderService.renameFolder(userId, folderId, newName);
         return Result.success("收藏夹重命名成功", folder);
@@ -76,8 +58,8 @@ public class FavoriteFolderController {
      * 删除收藏夹
      */
     @DeleteMapping("/{folderId}")
-    public Result<Void> deleteFolder(@PathVariable Long folderId) {
-        Long userId = getCurrentUserId();
+    public Result<Void> deleteFolder(@PathVariable("folderId") Long folderId) {
+        Long userId = UserContextHolder.requireUserId();
         favoriteFolderService.deleteFolder(userId, folderId);
         return Result.success("收藏夹已删除", null);
     }
@@ -87,7 +69,7 @@ public class FavoriteFolderController {
      */
     @PutMapping("/sort")
     public Result<Void> updateFolderSort(@RequestBody Map<String, List<Long>> body) {
-        Long userId = getCurrentUserId();
+        Long userId = UserContextHolder.requireUserId();
         List<Long> folderIds = body.get("folderIds");
         favoriteFolderService.updateFolderSort(userId, folderIds);
         return Result.success("排序更新成功", null);

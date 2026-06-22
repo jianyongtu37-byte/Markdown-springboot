@@ -1,0 +1,23 @@
+# 环境变量 (含敏感信息)
+.env
+
+# IDE
+.idea/
+*.iml
+
+# 构建产物
+target/
+
+# 依赖
+node_modules/
+
+# 日志
+*.log
+
+# ES
+elasticsearch/*.zip
+elasticsearch/data/
+
+# 临时文件
+*.tmp
+*.bak

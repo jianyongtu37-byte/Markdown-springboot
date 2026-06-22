@@ -1,22 +1,24 @@
 version: '3.8'
 
 services:
+  # ========== 基础设施篇 (禁止对公网开放端口) ==========
+
   # MySQL 数据库
   mysql:
     image: mysql:8.0
     container_name: markdown-mysql
-    environment:
-      # 移除了会导致冲突的 MYSQL_USER 和 MYSQL_PASSWORD
-      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-root_password}
-      MYSQL_DATABASE: ${DB_NAME:-markdown_db}
     ports:
-      - "3307:3306"
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-Complex_P@ssw0rd}
+      MYSQL_DATABASE: ${DB_NAME:-markdown_db}
     volumes:
-      - mysql_data:/var/lib/mysql
-      # 注意：启动前请确保本地目录下已有 schema.sql 文件（哪怕是空的），否则会被识别为文件夹报错
+      # 1. 改为相对路径：挂载当前目录下的 schema.sql 文件
       - ./schema.sql:/docker-entrypoint-initdb.d/schema.sql
+      # 2. 补上数据持久化卷（极其重要，否则数据无法保存）
+      - mysql_data:/var/lib/mysql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DB_PASSWORD:-root_password}"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DB_PASSWORD:-Complex_P@ssw0rd}"]
       timeout: 20s
       retries: 10
     networks:
@@ -28,13 +30,13 @@ services:
     image: redis:7-alpine
     container_name: markdown-redis
     ports:
-      - "${REDIS_PORT:-6379}:6379"
+      - "6379:6379"
     volumes:
       - redis_data:/data
-    # 强制给了个默认密码 devpassword，防止 .env 没写密码导致语法报错崩溃
-    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-devpassword}
+    # 强制密码，防止被扫描注入挖矿脚本
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-Complex_Redis_P@ss}
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-devpassword}", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-Complex_Redis_P@ss}", "ping"]
       timeout: 10s
       retries: 5
     networks:
@@ -43,19 +45,20 @@ services:
 
   # Elasticsearch
   elasticsearch:
-    image: elasticsearch:9.3.2
+    build:
+      context: ./elasticsearch
+      dockerfile: Dockerfile
+    image: markdown-elasticsearch:8.10.4-ik
     container_name: markdown-elasticsearch
+    ports:
+      - "9200:9200"
     environment:
       - discovery.type=single-node
       - xpack.security.enabled=false
+      # 【内存优化】线上至少分配 512M，如果你的服务器内存够大（如8G以上），可调至 -Xms1g -Xmx1g
       - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
-    ports:
-      - "${ES_PORT:-9200}:9200"
-      - "${ES_TRANSPORT_PORT:-9300}:9300"
     volumes:
       - elasticsearch_data:/usr/share/elasticsearch/data
-      # 【已注释】本地还没搞好权限前先别挂载，需要用时先用 mkdir 创建文件夹并授权 (chown 1000:1000 es_plugins)
-      # - ./es_plugins:/usr/share/elasticsearch/plugins
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:9200/_cluster/health" ]
       interval: 30s
@@ -69,12 +72,196 @@ services:
         soft: -1
         hard: -1
 
-  # Markdown 知识库后端应用
-  app:
+  # RabbitMQ 消息队列
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: markdown-rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      - RABBITMQ_DEFAULT_USER=${RABBITMQ_USERNAME:-admin}
+      - RABBITMQ_DEFAULT_PASS=${RABBITMQ_PASSWORD:-Complex_MQ_P@ss}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - markdown-network
+    restart: unless-stopped
+
+  # Nacos 服务注册与配置中心
+  nacos:
+    image: nacos/nacos-server:v2.3.2
+    container_name: markdown-nacos
+    ports:
+      - "8848:8848"
+      - "9848:9848"
+    environment:
+      - MODE=standalone
+      - PREFER_HOST_MODE=hostname
+      # 【内存优化】降低 Nacos 空载时的内存占用
+      - JVM_XMS=256m
+      - JVM_XMX=256m
+    networks:
+      - markdown-network
+    restart: unless-stopped
+
+  # Sentinel 限流熔断控制台
+  sentinel:
+    image: bladex/sentinel-dashboard:1.8.8
+    container_name: markdown-sentinel
+    ports:
+      - "8858:8858"
+    environment:
+      - JAVA_OPTS=-Xms128m -Xmx128m # 【内存优化】控制台不吃内存，压到128M
+    networks:
+      - markdown-network
+    restart: unless-stopped
+
+
+  # ========== 微服务应用篇 (引入 JVM 限制，统一走内部网络) ==========
+
+  # 网关服务 (总入口)
+  gateway-service:
+    build:
+      context: ../markdown-gateway
+      dockerfile: Dockerfile
+    container_name: markdown-gateway
+    depends_on:
+      nacos:
+        condition: service_started
+      user-service:
+        condition: service_started
+    environment:
+      - NACOS_SERVER=nacos:8848
+      - JWT_SECRET=${JWT_SECRET:-markdown-knowledge-base-secret-key-2025-spring-boot-4.0.5-jwt-token-secret}
+      - SERVER_PORT=8080
+      # 【内存优化】网关负责转发，IO密集，内存可控
+      - JAVA_OPTS=-Xms256m -Xmx256m
+    # 【网络策略】由于后续由 Nginx 代理，实际上 Gateway 的 8080 端口也可以不暴露，直接让 Nginx 通过内部容器名 proxy_pass http://markdown-gateway:8080
+    ports:
+      - "8085:8080" # 若完全通过 Nginx 代理，此节点也可删除
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    networks:
+      - markdown-network
+    restart: unless-stopped
+
+  # 用户服务
+  user-service:
+    build:
+      context: ../markdown-user
+      dockerfile: Dockerfile
+    container_name: markdown-user
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nacos:
+        condition: service_started
+    environment:
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_NAME=${DB_NAME:-markdown_db}
+      - DB_USERNAME=root
+      - DB_PASSWORD=${DB_PASSWORD:-Complex_P@ssw0rd}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-Complex_Redis_P@ss}
+      - NACOS_SERVER=nacos:8848
+      - SERVER_PORT=8081
+      - JAVA_OPTS=-Xms256m -Xmx256m # 【内存优化】
+    # 【安全优化】微服务只通过 Gateway 访问，不直接对外暴露端口
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    networks:
+      - markdown-network
+    restart: unless-stopped
+
+  # AI 智能服务
+  ai-service:
+    build:
+      context: ../markdown-ai
+      dockerfile: Dockerfile
+    container_name: markdown-ai
+    depends_on:
+      nacos:
+        condition: service_started
+    environment:
+      - NACOS_SERVER=nacos:8848
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - SERVER_PORT=8082
+      - JAVA_OPTS=-Xms256m -Xmx256m # 【内存优化】
+    networks:
+      - markdown-network
+    restart: unless-stopped
+
+  # 导出服务
+  export-service:
+    build:
+      context: ../markdown-export
+      dockerfile: Dockerfile
+    container_name: markdown-export
+    depends_on:
+      nacos:
+        condition: service_started
+      rabbitmq:
+        condition: service_started
+    environment:
+      - NACOS_SERVER=nacos:8848
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_PORT=5672
+      - RABBITMQ_USERNAME=${RABBITMQ_USERNAME:-admin}
+      - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD:-Complex_MQ_P@ss}
+      - SERVER_PORT=8083
+      - JAVA_OPTS=-Xms256m -Xmx256m # 【内存优化】
+    volumes:
+      - ./exports:/app/exports
+    networks:
+      - markdown-network
+    restart: unless-stopped
+
+  # RAG 知识问答 Agent (Python FastAPI)
+  rag-agent:
+    build:
+      context: ../python-rag-agent
+      dockerfile: Dockerfile
+    container_name: markdown-rag-agent
+    environment:
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - DEEPSEEK_API_URL=${DEEPSEEK_API_URL:-https://api.deepseek.com/v1}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-Complex_Redis_P@ss}
+      - REDIS_DB=2
+      - EMBEDDING_MODEL=BAAI/bge-small-zh-v1.5
+      - CHUNK_SIZE=500
+      - CHUNK_OVERLAP=50
+      - TOP_K=5
+      - SCORE_THRESHOLD=0.3
+    volumes:
+      - rag-faiss-data:/app/data/faiss_indexes
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - markdown-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8084/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # 文章核心服务
+  article-service:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: markdown-app
+    container_name: markdown-article
     depends_on:
       mysql:
         condition: service_healthy
@@ -82,109 +269,47 @@ services:
         condition: service_healthy
       elasticsearch:
         condition: service_healthy
+      nacos:
+        condition: service_started
     environment:
-      # 数据库配置（统一使用 root 用户连接）
       - DB_HOST=mysql
       - DB_PORT=3306
       - DB_NAME=${DB_NAME:-markdown_db}
       - DB_USERNAME=root
-      - DB_PASSWORD=${DB_PASSWORD:-root_password}
-
-      # Redis配置
+      - DB_PASSWORD=${DB_PASSWORD:-Complex_P@ssw0rd}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - REDIS_PASSWORD=${REDIS_PASSWORD:-devpassword}
-      - REDIS_DATABASE=${REDIS_DATABASE:-0}
-
-      # Elasticsearch配置
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-Complex_Redis_P@ss}
       - ES_HOST=elasticsearch
       - ES_PORT=9200
-      - ES_USERNAME=${ES_USERNAME:-}
-      - ES_PASSWORD=${ES_PASSWORD:-}
-
-      # JWT配置
-      - JWT_SECRET=${JWT_SECRET:-markdown-knowledge-base-secret-key-2025-spring-boot-4.0.5-jwt-token-secret}
-      - JWT_EXPIRATION=${JWT_EXPIRATION:-86400}
-
-      # DeepSeek AI配置
-      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
-      - DEEPSEEK_API_URL=${DEEPSEEK_API_URL:-https://api.deepseek.com/v1}
-      - DEEPSEEK_MODEL=${DEEPSEEK_MODEL:-deepseek-chat}
-      - DEEPSEEK_TIMEOUT_SECONDS=${DEEPSEEK_TIMEOUT_SECONDS:-30}
-      - DEEPSEEK_MAX_TOKENS=${DEEPSEEK_MAX_TOKENS:-500}
-
-      # 应用配置
-      - SERVER_PORT=8080
-      - SPRING_PROFILES_ACTIVE=${SPRING_PROFILES_ACTIVE:-dev}
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-
-      # Spring Boot特定配置
-      - SPRING_DATASOURCE_URL=jdbc:mysql://mysql:3306/${DB_NAME:-markdown_db}?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
-      - SPRING_DATASOURCE_USERNAME=root
-      - SPRING_DATASOURCE_PASSWORD=${DB_PASSWORD:-root_password}
-      - SPRING_REDIS_HOST=redis
-      # 【已修正】适配 Spring Boot 3.x / Spring Data ES 5.x 的最新配置项
-      - SPRING_ELASTICSEARCH_URIS=http://elasticsearch:9200
-    ports:
-      - "${SERVER_PORT:-8080}:8080"
+      - NACOS_SERVER=nacos:8848
+      - SERVER_PORT=8084
+      - JAVA_OPTS=-Xms384m -Xmx384m # 【内存优化】文章服务涉及 ES 操作和文本处理，可稍大多给点内存
     volumes:
       - ./logs:/app/logs
       - ./uploads:/app/uploads
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     networks:
       - markdown-network
     restart: unless-stopped
-    healthcheck:
-      # 【已修正】使用 wget 替换 curl，防止精简版 alpine Java 镜像没有 curl 导致健康检查卡死
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/actuator/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
 
-  # Nginx 反向代理（可选）
+  # ========== Web 服务器 (唯一的公网入口) ==========
+
+  # Nginx 反向代理
   nginx:
     image: nginx:alpine
     container_name: markdown-nginx
     depends_on:
-      - app
+      - gateway-service # Nginx 依赖网关启动
     ports:
       - "80:80"
       - "443:443"
     volumes:
-      # 注意：启动前请确保本地已有这两个文件/文件夹，否则会报错
       - ./nginx.conf:/etc/nginx/nginx.conf
       - ./ssl:/etc/nginx/ssl
-    networks:
-      - markdown-network
-    restart: unless-stopped
-
-  # Adminer 数据库管理工具（可选）
-  adminer:
-    image: adminer
-    container_name: markdown-adminer
-    depends_on:
-      - mysql
-    ports:
-      - "8081:8080"
-    environment:
-      - ADMINER_DEFAULT_SERVER=mysql
-    networks:
-      - markdown-network
-    restart: unless-stopped
-
-  # Redis Commander Redis管理工具（可选）
-  redis-commander:
-    image: rediscommander/redis-commander:latest
-    container_name: markdown-redis-commander
-    depends_on:
-      - redis
-    ports:
-      - "8082:8081"
-    environment:
-      # 【已修正】在连接字符串里拼入了密码，保证有密码时也能顺利连接管理面板
-      - REDIS_HOSTS=local:redis:6379:0:${REDIS_PASSWORD:-devpassword}
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - REDIS_PASSWORD=${REDIS_PASSWORD:-devpassword}
+      # 挂载前端 Vue 编译后的产物
+      - ./vue-dist:/usr/share/nginx/html
     networks:
       - markdown-network
     restart: unless-stopped
@@ -197,10 +322,11 @@ networks:
 volumes:
   mysql_data:
     driver: local
-    name: markdown-mysql-data
   redis_data:
     driver: local
-    name: markdown-redis-data
   elasticsearch_data:
     driver: local
-    name: markdown-elasticsearch-data
+  rabbitmq_data:
+    driver: local
+  rag-faiss-data:
+    driver: local

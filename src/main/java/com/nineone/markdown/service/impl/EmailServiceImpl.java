@@ -131,7 +131,7 @@ public class EmailServiceImpl implements EmailService {
     /**
      * 异步发送简单邮件
      */
-    @Async
+    @Async("taskExecutor")
     public void sendSimpleEmailAsync(String to, String subject, String content) {
         sendSimpleEmail(to, subject, content);
     }
@@ -139,7 +139,7 @@ public class EmailServiceImpl implements EmailService {
     /**
      * 异步发送HTML邮件
      */
-    @Async
+    @Async("taskExecutor")
     public void sendHtmlEmailAsync(String to, String subject, String htmlContent) {
         sendHtmlEmail(to, subject, htmlContent);
     }
@@ -147,7 +147,7 @@ public class EmailServiceImpl implements EmailService {
     /**
      * 异步发送欢迎邮件
      */
-    @Async
+    @Async("taskExecutor")
     public void sendWelcomeEmailAsync(String to, String username) {
         sendWelcomeEmail(to, username);
     }
@@ -155,7 +155,7 @@ public class EmailServiceImpl implements EmailService {
     /**
      * 异步发送注册验证邮件
      */
-    @Async
+    @Async("taskExecutor")
     public void sendRegistrationVerificationEmailAsync(String to, String username, String verificationLink) {
         sendRegistrationVerificationEmail(to, username, verificationLink);
     }
@@ -163,7 +163,7 @@ public class EmailServiceImpl implements EmailService {
     /**
      * 异步发送密码重置邮件
      */
-    @Async
+    @Async("taskExecutor")
     public void sendPasswordResetEmailAsync(String to, String username, String resetLink) {
         sendPasswordResetEmail(to, username, resetLink);
     }

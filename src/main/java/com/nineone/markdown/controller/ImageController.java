@@ -1,10 +1,9 @@
 package com.nineone.markdown.controller;
 
-import com.nineone.markdown.common.Result;
+import com.nineone.common.result.Result;
 import com.nineone.markdown.entity.Image;
-import com.nineone.markdown.exception.AuthenticationException;
-import com.nineone.markdown.security.CustomUserDetails;
 import com.nineone.markdown.service.ImageService;
+import com.nineone.markdown.util.UserContextHolder;
 import com.nineone.markdown.vo.ImageVO;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
@@ -13,8 +12,6 @@ import org.springframework.core.io.Resource;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -55,27 +52,12 @@ public class ImageController {
     }
 
     /**
-     * 获取当前登录用户的ID
-     */
-    private Long getCurrentUserId() {
-        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-        if (authentication == null || !authentication.isAuthenticated()) {
-            throw new AuthenticationException("用户未认证", "UNAUTHENTICATED");
-        }
-        Object principal = authentication.getPrincipal();
-        if (principal instanceof CustomUserDetails) {
-            return ((CustomUserDetails) principal).getId();
-        }
-        throw new AuthenticationException("用户未登录或登录已过期", "TOKEN_EXPIRED");
-    }
-
-    /**
      * 上传图片
      */
     @PostMapping("/upload")
     public Result<ImageVO> uploadImage(@RequestParam("file") MultipartFile file,
-                                        @RequestParam(required = false) Long articleId) {
-        Long userId = getCurrentUserId();
+                                        @RequestParam(value = "articleId", required = false) Long articleId) {
+        Long userId = UserContextHolder.requireUserId();
         Image image = imageService.uploadImage(file, userId, articleId);
 
         ImageVO vo = ImageVO.builder()
@@ -98,7 +80,7 @@ public class ImageController {
      */
     @GetMapping("/my")
     public Result<List<ImageVO>> getMyImages() {
-        Long userId = getCurrentUserId();
+        Long userId = UserContextHolder.requireUserId();
         List<Image> images = imageService.getUserImages(userId);
 
         List<ImageVO> vos = images.stream()
@@ -122,7 +104,7 @@ public class ImageController {
      * 获取文章的关联图片列表
      */
     @GetMapping("/article/{articleId}")
-    public Result<List<ImageVO>> getArticleImages(@PathVariable Long articleId) {
+    public Result<List<ImageVO>> getArticleImages(@PathVariable("articleId") Long articleId) {
         List<Image> images = imageService.getArticleImages(articleId);
 
         List<ImageVO> vos = images.stream()
@@ -146,8 +128,8 @@ public class ImageController {
      * 删除图片
      */
     @DeleteMapping("/{imageId}")
-    public Result<Void> deleteImage(@PathVariable Long imageId) {
-        Long userId = getCurrentUserId();
+    public Result<Void> deleteImage(@PathVariable("imageId") Long imageId) {
+        Long userId = UserContextHolder.requireUserId();
         imageService.deleteImage(imageId, userId);
         return Result.success("图片已删除", null);
     }
@@ -156,15 +138,28 @@ public class ImageController {
      * 获取图片文件（公开访问）
      */
     @GetMapping("/{imageId}/file")
-    public ResponseEntity<Resource> getImageFile(@PathVariable Long imageId) {
+    public ResponseEntity<Resource> getImageFile(@PathVariable("imageId") Long imageId) {
         Image image = imageService.getImageById(imageId);
         if (image == null) {
             return ResponseEntity.notFound().build();
         }
 
         try {
-            Path filePath = Paths.get(uploadPath, image.getStoragePath());
-            File file = filePath.toFile();
+            // 路径穿越防护：与 ExportController 保持一致的纵深防御
+            String storagePath = image.getStoragePath();
+            if (storagePath.contains("..") || storagePath.contains("\\")) {
+                return ResponseEntity.badRequest().build();
+            }
+
+            Path baseDir = Paths.get(uploadPath).toAbsolutePath().normalize();
+            Path resolvedPath = baseDir.resolve(storagePath).normalize();
+
+            // 确保解析后的路径仍在上传目录内
+            if (!resolvedPath.startsWith(baseDir)) {
+                return ResponseEntity.badRequest().build();
+            }
+
+            File file = resolvedPath.toFile();
             if (!file.exists()) {
                 return ResponseEntity.notFound().build();
             }

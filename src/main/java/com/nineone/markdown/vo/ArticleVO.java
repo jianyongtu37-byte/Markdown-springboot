@@ -29,9 +29,24 @@ public class ArticleVO {
     private Long userId;
 
     /**
-     * 作者昵称
+     * 作者昵称（优先显示名，nickname 或 username 兜底，保证非空）
      */
     private String authorName;
+
+    /**
+     * 作者头像URL
+     */
+    private String authorAvatar;
+
+    /**
+     * 作者原始昵称（与 authorName 相同但无兜底，供前端 fallback）
+     */
+    private String nickname;
+
+    /**
+     * 作者用户名（最终兜底）
+     */
+    private String username;
 
     /**
      * 分类ID
@@ -79,9 +94,28 @@ public class ArticleVO {
     private Integer viewCount;
 
     /**
+     * 点赞数
+     */
+    private Integer likeCount;
+
+    /**
+     * 评论数
+     */
+    private Integer commentCount;
+
+    /**
+     * 收藏数
+     */
+    private Integer favoriteCount;
+
+    /**
      * 允许他人导出：0-禁止，1-允许
      */
     private Integer allowExport;
+
+    private Integer isPinned;
+
+    private LocalDateTime pinnedTime;
 
     /**
      * 标签列表

@@ -73,6 +73,24 @@ public class User {
     private LocalDateTime emailVerifiedAt;
 
     /**
+     * 角色：ROLE_USER-普通用户, ROLE_ADMIN-管理员
+     */
+    @TableField(value = "role")
+    private String role;
+
+    /**
+     * 用户状态：0-禁用, 1-正常
+     */
+    @TableField(value = "status")
+    private Integer status;
+
+    /**
+     * 头像URL
+     */
+    @TableField(value = "avatar")
+    private String avatar;
+
+    /**
      * 注册时间
      */
     @TableField(value = "create_time", fill = FieldFill.INSERT)

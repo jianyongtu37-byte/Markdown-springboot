@@ -25,6 +25,8 @@ public class ArticleDetailDTO {
     private ArticleStatusEnum status;
     private Integer viewCount;
     private Integer allowExport;
+    private Integer isPinned;
+    private LocalDateTime pinnedTime;
     private Integer likeCount;
     private Integer commentCount;
     private Integer favoriteCount;
@@ -33,6 +35,7 @@ public class ArticleDetailDTO {
 
     // ====== sys_user 表字段（LEFT JOIN） ======
     private String authorName;
+    private String authorAvatar;
 
     // ====== category 表字段（LEFT JOIN） ======
     private String categoryName;

@@ -6,11 +6,15 @@ import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.nineone.markdown.entity.Article;
 import com.nineone.markdown.entity.User;
 import com.nineone.markdown.mapper.ArticleMapper;
+import com.nineone.markdown.mapper.UserFollowMapper;
 import com.nineone.markdown.mapper.UserMapper;
 import com.nineone.markdown.service.UserService;
+import com.nineone.markdown.vo.UserProfileVO;
 import com.nineone.markdown.vo.UserVO;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.cache.Cache;
+import org.springframework.cache.CacheManager;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -18,6 +22,7 @@ import org.springframework.util.Assert;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 /**
@@ -30,7 +35,9 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
 
     private final UserMapper userMapper;
     private final ArticleMapper articleMapper;
+    private final UserFollowMapper userFollowMapper;
     private final PasswordEncoder passwordEncoder;
+    private final CacheManager cacheManager;
 
     @Override
     public User getUserById(Long id) {
@@ -79,10 +86,41 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         // 保留用户名和密码字段（不能通过此接口修改）
         user.setUsername(existingUser.getUsername());
         user.setPassword(existingUser.getPassword());
-        
+
         // 更新用户信息
         int updateCount = userMapper.updateById(user);
+
+        // 如果昵称有变化，清除该用户所有文章缓存（避免文章详情页显示旧的空作者名）
+        boolean nicknameChanged = user.getNickname() != null
+                && !user.getNickname().equals(existingUser.getNickname());
+        if (nicknameChanged) {
+            evictArticleCaches(user.getId());
+        }
+
         return updateCount > 0;
+    }
+
+    /**
+     * 清除指定用户的所有文章缓存
+     * 当用户更新昵称时，需要使已缓存的文章详情失效，避免 authorName 仍为 null
+     */
+    private void evictArticleCaches(Long userId) {
+        Cache cache = cacheManager.getCache("articles");
+        if (cache == null) {
+            return;
+        }
+        try {
+            LambdaQueryWrapper<Article> wrapper = new LambdaQueryWrapper<>();
+            wrapper.eq(Article::getUserId, userId);
+            wrapper.select(Article::getId);
+            List<Article> articles = articleMapper.selectList(wrapper);
+            for (Article article : articles) {
+                cache.evict(article.getId());
+            }
+            log.info("用户 {} 昵称变更，已清除 {} 篇文章缓存", userId, articles.size());
+        } catch (Exception e) {
+            log.warn("清除文章缓存失败，userId={}: {}", userId, e.getMessage());
+        }
     }
 
     @Override
@@ -160,6 +198,35 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
     }
 
     @Override
+    public UserProfileVO getUserProfile(Long userId) {
+        Assert.notNull(userId, "用户ID不能为空");
+        User user = userMapper.selectById(userId);
+        if (user == null) {
+            throw new RuntimeException("用户不存在");
+        }
+
+        Map<String, Object> stats = articleMapper.selectProfileStatsByUserId(userId);
+        long articleCount = stats != null && stats.get("articleCount") != null
+                ? ((Number) stats.get("articleCount")).longValue() : 0;
+        long totalLikes = stats != null && stats.get("totalLikes") != null
+                ? ((Number) stats.get("totalLikes")).longValue() : 0;
+
+        int followerCount = userFollowMapper.countFollowers(userId);
+        int followingCount = userFollowMapper.countFollowing(userId);
+
+        return UserProfileVO.builder()
+                .id(user.getId())
+                .username(user.getUsername())
+                .nickname(user.getNickname())
+                .articleCount((int) articleCount)
+                .totalLikes(totalLikes)
+                .followerCount(followerCount)
+                .followingCount(followingCount)
+                .createTime(user.getCreateTime())
+                .build();
+    }
+
+    @Override
     public Long getUserCount() {
         LambdaQueryWrapper<User> queryWrapper = new LambdaQueryWrapper<>();
         return userMapper.selectCount(queryWrapper);
@@ -186,6 +253,9 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
                 .username(user.getUsername())
                 .nickname(user.getNickname())
                 .email(user.getEmail())
+                .role(user.getRole() != null ? user.getRole() : "ROLE_USER")
+                .status(user.getStatus() != null ? user.getStatus() : 1)
+                .avatar(user.getAvatar())
                 .createTime(user.getCreateTime())
                 .updateTime(user.getUpdateTime())
                 .articleCount(articleCount != null ? articleCount.intValue() : 0)

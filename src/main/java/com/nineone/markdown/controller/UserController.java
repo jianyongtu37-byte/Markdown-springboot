@@ -1,6 +1,8 @@
 package com.nineone.markdown.controller;
 
-import com.nineone.markdown.common.Result;
+import com.nineone.common.result.Result;
+import com.nineone.markdown.dto.AdminResetPasswordRequest;
+import com.nineone.markdown.dto.UpdatePasswordRequest;
 import com.nineone.markdown.entity.User;
 import com.nineone.markdown.exception.AuthenticationException;
 import com.nineone.markdown.security.CustomUserDetails;
@@ -10,11 +12,11 @@ import com.nineone.markdown.vo.UserVO;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
 import jakarta.validation.Valid;
-import jakarta.validation.constraints.NotBlank;
 import java.util.List;
 
 /**
@@ -78,11 +80,17 @@ public class UserController {
         }
     }
 
+    @GetMapping("/{id}/profile")
+    public Result<com.nineone.markdown.vo.UserProfileVO> getPublicProfile(@PathVariable("id") Long id) {
+        com.nineone.markdown.vo.UserProfileVO profile = userService.getUserProfile(id);
+        return Result.success(profile);
+    }
+
     /**
      * 获取用户详情
      */
     @GetMapping("/{id}")
-    public Result<UserVO> getUser(@PathVariable Long id) {
+    public Result<UserVO> getUser(@PathVariable("id") Long id) {
         User user = userService.getUserById(id);
         if (user == null) {
             return Result.<UserVO>notFound("用户不存在");
@@ -93,6 +101,9 @@ public class UserController {
                 .username(user.getUsername())
                 .nickname(user.getNickname())
                 .email(user.getEmail())
+                .role(user.getRole() != null ? user.getRole() : "ROLE_USER")
+                .status(user.getStatus() != null ? user.getStatus() : 1)
+                .avatar(user.getAvatar())
                 .createTime(user.getCreateTime())
                 .updateTime(user.getUpdateTime())
                 .build();
@@ -136,9 +147,9 @@ public class UserController {
             
             boolean success = userService.updateUser(updateRequest);
             if (!success) {
-                return Result.<Void>builder().code(404).message("用户不存在，更新失败").build();
+                return Result.notFound("用户不存在，更新失败");
             }
-            return Result.<Void>builder().code(200).message("用户信息更新成功").build();
+            return Result.success("用户信息更新成功", null);
         } else {
             // 抛出自定义的认证失败异常，让全局异常处理器返回 401 状态码
             throw new AuthenticationException("用户未登录或登录已过期", "TOKEN_EXPIRED");
@@ -151,9 +162,9 @@ public class UserController {
      * 🔥 优化：优先从 UserContextHolder（ThreadLocal 缓存）获取用户信息，零数据库查询
      */
     @PutMapping("/me/password")
-    public Result<Void> updatePassword(
-            @RequestParam @NotBlank String oldPassword,
-            @RequestParam @NotBlank String newPassword) {
+    public Result<Void> updatePassword(@Valid @RequestBody UpdatePasswordRequest request) {
+        String oldPassword = request.getOldPassword();
+        String newPassword = request.getNewPassword();
         
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
         if (authentication == null || !authentication.isAuthenticated()) {
@@ -178,9 +189,9 @@ public class UserController {
             
             boolean success = userService.updatePassword(currentUserId, oldPassword, newPassword);
             if (!success) {
-                return Result.<Void>builder().code(400).message("原密码错误，更新失败").build();
+                return Result.error(400, "原密码错误，更新失败");
             }
-            return Result.<Void>builder().code(200).message("密码更新成功").build();
+            return Result.success("密码更新成功", null);
         } else {
             // 抛出自定义的认证失败异常，让全局异常处理器返回 401 状态码
             throw new AuthenticationException("用户未登录或登录已过期", "TOKEN_EXPIRED");
@@ -191,6 +202,7 @@ public class UserController {
      * 获取所有用户列表（管理员功能）
      */
     @GetMapping
+    @PreAuthorize("hasRole('ADMIN')")
     public Result<List<UserVO>> getAllUsers() {
         List<UserVO> users = userService.getAllUsers();
         return Result.success(users);
@@ -200,7 +212,8 @@ public class UserController {
      * 搜索用户（管理员功能）
      */
     @GetMapping("/search")
-    public Result<List<UserVO>> searchUsers(@RequestParam String keyword) {
+    @PreAuthorize("hasRole('ADMIN')")
+    public Result<List<UserVO>> searchUsers(@RequestParam("keyword") String keyword) {
         List<UserVO> users = userService.searchUsers(keyword);
         return Result.success(users);
     }
@@ -209,6 +222,7 @@ public class UserController {
      * 获取用户统计信息（管理员功能）
      */
     @GetMapping("/stats")
+    @PreAuthorize("hasRole('ADMIN')")
     public Result<Long> getUserStats() {
         Long count = userService.getUserCount();
         return Result.success("获取用户统计成功", count);
@@ -218,11 +232,13 @@ public class UserController {
      * 重置用户密码（管理员功能）
      */
     @PostMapping("/{id}/reset-password")
-    public Result<Void> resetPassword(@PathVariable Long id, @RequestParam @NotBlank String newPassword) {
+    @PreAuthorize("hasRole('ADMIN')")
+    public Result<Void> resetPassword(@PathVariable("id") Long id, @Valid @RequestBody AdminResetPasswordRequest request) {
+        String newPassword = request.getNewPassword();
         boolean success = userService.resetPassword(id, newPassword);
         if (!success) {
-            return Result.<Void>builder().code(404).message("用户不存在，重置失败").build();
+            return Result.notFound("用户不存在，重置失败");
         }
-        return Result.<Void>builder().code(200).message("密码重置成功").build();
+        return Result.success("密码重置成功", null);
     }
 }

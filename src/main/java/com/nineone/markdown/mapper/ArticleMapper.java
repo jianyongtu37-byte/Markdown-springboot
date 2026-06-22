@@ -116,9 +116,11 @@ public interface ArticleMapper extends BaseMapper<Article> {
     @Select("SELECT " +
             "a.id, a.user_id, a.category_id, a.title, a.content, a.video_url, " +
             "a.summary, a.ai_status, a.`status`, a.view_count, a.allow_export, " +
+            "a.is_pinned, a.pinned_time, " +
             "a.like_count, a.comment_count, a.favorite_count, " +
             "a.create_time, a.update_time, " +
             "u.nickname AS author_name, " +
+            "u.avatar AS author_avatar, " +
             "c.name AS category_name, " +
             "v.id AS video_id, v.video_source, v.video_id AS video_video_id, " +
             "v.duration AS video_duration, v.create_time AS video_create_time, " +
@@ -135,4 +137,41 @@ public interface ArticleMapper extends BaseMapper<Article> {
             "GROUP BY a.id")
     @com.baomidou.mybatisplus.annotation.InterceptorIgnore(dataPermission = "true")
     ArticleDetailDTO selectArticleDetailById(@Param("id") Long id);
+
+    @Select("SELECT COUNT(*) as articleCount, COALESCE(SUM(like_count), 0) as totalLikes FROM article WHERE user_id = #{userId} AND status = 2 AND deleted = 0")
+    @com.baomidou.mybatisplus.annotation.InterceptorIgnore(dataPermission = "true")
+    Map<String, Object> selectProfileStatsByUserId(@Param("userId") Long userId);
+
+    /**
+     * 从源表重新计算所有文章的计数字段（like_count, comment_count, favorite_count）
+     * 用于修复数据不一致问题
+     */
+    @Update("UPDATE article a SET " +
+            "a.like_count = (SELECT COUNT(*) FROM article_like al WHERE al.article_id = a.id), " +
+            "a.comment_count = (SELECT COUNT(*) FROM article_comment ac WHERE ac.article_id = a.id AND ac.status = 1), " +
+            "a.favorite_count = (SELECT COUNT(*) FROM user_favorite uf WHERE uf.article_id = a.id) " +
+            "WHERE a.deleted = 0")
+    @com.baomidou.mybatisplus.annotation.InterceptorIgnore(dataPermission = "true")
+    void reconcileAllCounts();
+
+    /**
+     * 根据 ID 列表批量查询文章（忽略数据权限拦截器）
+     * 用于点赞列表等跨用户数据查询场景
+     * @param ids 文章ID列表
+     * @return 文章列表
+     */
+    @Select("<script>SELECT * FROM article WHERE id IN <foreach collection='ids' item='id' open='(' separator=',' close=')'>#{id}</foreach> AND deleted = 0</script>")
+    @com.baomidou.mybatisplus.annotation.InterceptorIgnore(dataPermission = "true")
+    java.util.List<Article> selectListByIdsIgnorePermission(@Param("ids") java.util.List<Long> ids);
+
+    /**
+     * 从源表重新计算单篇文章的计数字段
+     */
+    @Update("UPDATE article a SET " +
+            "a.like_count = (SELECT COUNT(*) FROM article_like al WHERE al.article_id = a.id), " +
+            "a.comment_count = (SELECT COUNT(*) FROM article_comment ac WHERE ac.article_id = a.id AND ac.status = 1), " +
+            "a.favorite_count = (SELECT COUNT(*) FROM user_favorite uf WHERE uf.article_id = a.id) " +
+            "WHERE a.id = #{id} AND a.deleted = 0")
+    @com.baomidou.mybatisplus.annotation.InterceptorIgnore(dataPermission = "true")
+    void reconcileCountsByArticleId(@Param("id") Long id);
 }

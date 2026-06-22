@@ -7,10 +7,13 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import jakarta.mail.internet.MimeMessage;
 import org.springframework.mail.SimpleMailMessage;
 import org.springframework.mail.javamail.JavaMailSender;
 import org.thymeleaf.TemplateEngine;
 import org.thymeleaf.context.Context;
+
+import java.lang.reflect.Field;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -32,10 +35,15 @@ public class EmailServiceTest {
     private EmailServiceImpl emailService;
 
     @BeforeEach
-    void setUp() {
-        // 可以使用反射设置私有字段
-        // emailService.setFromEmail("test@example.com");
-        // emailService.setAppUrl("http://localhost:8080");
+    void setUp() throws Exception {
+        // @Value 注解不会在单元测试中注入，需通过反射设置
+        Field fromEmailField = EmailServiceImpl.class.getDeclaredField("fromEmail");
+        fromEmailField.setAccessible(true);
+        fromEmailField.set(emailService, "test@example.com");
+
+        Field appUrlField = EmailServiceImpl.class.getDeclaredField("appUrl");
+        appUrlField.setAccessible(true);
+        appUrlField.set(emailService, "http://localhost:8080");
     }
 
     @Test
@@ -59,81 +67,73 @@ public class EmailServiceTest {
 
     @Test
     void testSendHtmlEmail_Success() {
-        // 模拟HTML邮件发送成功
-        when(mailSender.createMimeMessage()).thenReturn(null);
-        // 注意：由于MimeMessage是复杂的对象，这里简化测试
-        // 在实际测试中，可能需要更详细的模拟
-        
-        // 执行测试
+        MimeMessage mockMessage = mock(MimeMessage.class);
+        when(mailSender.createMimeMessage()).thenReturn(mockMessage);
+        doNothing().when(mailSender).send(any(MimeMessage.class));
+
         boolean result = emailService.sendHtmlEmail(
-            "recipient@example.com", 
-            "HTML测试主题", 
+            "recipient@example.com",
+            "HTML测试主题",
             "<h1>HTML内容</h1>"
         );
 
-        // 验证结果
-        // 由于我们简化了模拟，这里只验证方法被调用
-        // 在实际项目中应该使用更完整的测试
+        verify(mailSender, times(1)).send(any(MimeMessage.class));
     }
 
     @Test
     void testSendWelcomeEmail_Success() {
-        // 模拟模板引擎
         when(templateEngine.process(eq("email/welcome"), any(Context.class)))
             .thenReturn("<html>欢迎邮件内容</html>");
 
-        // 模拟HTML邮件发送成功
-        when(mailSender.createMimeMessage()).thenReturn(null);
+        MimeMessage mockMessage = mock(MimeMessage.class);
+        when(mailSender.createMimeMessage()).thenReturn(mockMessage);
+        doNothing().when(mailSender).send(any(MimeMessage.class));
 
-        // 执行测试
         boolean result = emailService.sendWelcomeEmail(
-            "recipient@example.com", 
+            "recipient@example.com",
             "测试用户"
         );
 
-        // 验证结果
-        // 验证模板引擎被调用
         verify(templateEngine, times(1)).process(eq("email/welcome"), any(Context.class));
+        verify(mailSender, times(1)).send(any(MimeMessage.class));
     }
 
     @Test
     void testSendRegistrationVerificationEmail_Success() {
-        // 模拟模板引擎
         when(templateEngine.process(eq("email/verification"), any(Context.class)))
             .thenReturn("<html>验证邮件内容</html>");
 
-        // 模拟HTML邮件发送成功
-        when(mailSender.createMimeMessage()).thenReturn(null);
+        MimeMessage mockMessage = mock(MimeMessage.class);
+        when(mailSender.createMimeMessage()).thenReturn(mockMessage);
+        doNothing().when(mailSender).send(any(MimeMessage.class));
 
-        // 执行测试
         boolean result = emailService.sendRegistrationVerificationEmail(
-            "recipient@example.com", 
+            "recipient@example.com",
             "测试用户",
             "http://localhost:8080/verify?token=abc123"
         );
 
-        // 验证结果
         verify(templateEngine, times(1)).process(eq("email/verification"), any(Context.class));
+        verify(mailSender, times(1)).send(any(MimeMessage.class));
     }
 
     @Test
     void testSendPasswordResetEmail_Success() {
-        // 模拟模板引擎
         when(templateEngine.process(eq("email/password-reset"), any(Context.class)))
             .thenReturn("<html>密码重置邮件内容</html>");
 
-        // 模拟HTML邮件发送成功
-        when(mailSender.createMimeMessage()).thenReturn(null);
+        MimeMessage mockMessage = mock(MimeMessage.class);
+        when(mailSender.createMimeMessage()).thenReturn(mockMessage);
+        doNothing().when(mailSender).send(any(MimeMessage.class));
 
-        // 执行测试
         boolean result = emailService.sendPasswordResetEmail(
-            "recipient@example.com", 
+            "recipient@example.com",
             "测试用户",
             "http://localhost:8080/reset-password?token=xyz789"
         );
 
-        // 验证结果
         verify(templateEngine, times(1)).process(eq("email/password-reset"), any(Context.class));
+        verify(mailSender, times(1)).send(any(MimeMessage.class));
     }
 
     @Test

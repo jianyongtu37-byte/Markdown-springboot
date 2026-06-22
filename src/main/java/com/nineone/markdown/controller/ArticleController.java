@@ -1,20 +1,19 @@
 package com.nineone.markdown.controller;
 
-import com.nineone.markdown.common.PageResult;
-import com.nineone.markdown.common.Result;
+import com.nineone.common.result.PageResult;
+import com.nineone.common.result.Result;
 import com.nineone.markdown.dto.ArticleCreateDTO;
 import com.nineone.markdown.dto.ArticleSaveDTO;
 import com.nineone.markdown.entity.Article;
 import com.nineone.markdown.entity.ArticleTimestamp;
 import com.nineone.markdown.enums.ArticleStatusEnum;
-import com.nineone.markdown.exception.AuthenticationException;
-import com.nineone.markdown.security.CustomUserDetails;
 import com.nineone.markdown.service.ArticleService;
+import com.nineone.markdown.service.ReadingProgressService;
+import com.nineone.markdown.util.TimestampExtractor;
+import com.nineone.markdown.util.UserContextHolder;
 import com.nineone.markdown.vo.ArticleDetailVO;
 import com.nineone.markdown.vo.ArticleVO;
 import lombok.RequiredArgsConstructor;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
@@ -33,34 +32,14 @@ import java.util.Map;
 public class ArticleController {
 
     private final ArticleService articleService;
-
-    /**
-     * 获取当前登录用户的ID
-     * @return 当前用户ID
-     * @throws AuthenticationException 如果用户未认证
-     */
-    private Long getCurrentUserId() {
-        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-        if (authentication == null || !authentication.isAuthenticated()) {
-            throw new AuthenticationException("用户未认证", "UNAUTHENTICATED");
-        }
-        
-        Object principal = authentication.getPrincipal();
-        if (principal instanceof CustomUserDetails) {
-            CustomUserDetails userDetails = (CustomUserDetails) principal;
-            return userDetails.getId();
-        } else {
-            throw new AuthenticationException("用户未登录或登录已过期", "TOKEN_EXPIRED");
-        }
-    }
+    private final ReadingProgressService readingProgressService;
 
     /**
      * 创建文章
      */
     @PostMapping
     public Result<Long> createArticle(@Valid @RequestBody ArticleCreateDTO dto) {
-        // 从安全上下文获取当前用户ID
-        Long currentUserId = getCurrentUserId();
+        Long currentUserId = UserContextHolder.requireUserId();
         
         Article article = Article.builder()
                 .userId(currentUserId)
@@ -82,11 +61,12 @@ public class ArticleController {
      * 获取文章详情
      */
     @GetMapping("/{id}")
-    public Result<ArticleVO> getArticle(@PathVariable Long id) {
+    public Result<ArticleVO> getArticle(@PathVariable("id") Long id) {
         ArticleVO article = articleService.getArticleDetail(id);
         if (article == null) {
             return Result.notFound("文章不存在");
         }
+        recordReadingHistory(id);
         return Result.success(article);
     }
 
@@ -94,10 +74,9 @@ public class ArticleController {
      * 更新文章
      */
     @PutMapping("/{id}")
-    public Result<Void> updateArticle(@PathVariable Long id, @Valid @RequestBody ArticleCreateDTO dto) {
-        // 从安全上下文获取当前用户ID
-        Long currentUserId = getCurrentUserId();
-        
+    public Result<Void> updateArticle(@PathVariable("id") Long id, @Valid @RequestBody ArticleCreateDTO dto) {
+        Long currentUserId = UserContextHolder.requireUserId();
+
         Article article = Article.builder()
                 .id(id)
                 .userId(currentUserId)
@@ -120,7 +99,7 @@ public class ArticleController {
      * 删除文章
      */
     @DeleteMapping("/{id}")
-    public Result<Void> deleteArticle(@PathVariable Long id) {
+    public Result<Void> deleteArticle(@PathVariable("id") Long id) {
         boolean success = articleService.deleteArticle(id);
         if (!success) {
             return Result.notFound("文章不存在，删除失败");
@@ -133,13 +112,13 @@ public class ArticleController {
      */
     @GetMapping
     public Result<PageResult<ArticleVO>> getArticleList(
-            @RequestParam(defaultValue = "1") Integer pageNum,
-            @RequestParam(defaultValue = "10") Integer pageSize,
-            @RequestParam(required = false) Long categoryId,
-            @RequestParam(required = false) Long tagId,
-            @RequestParam(required = false) String keyword,
-            @RequestParam(required = false) Integer status,
-            @RequestParam(required = false) Integer isPublic) {
+            @RequestParam(value = "pageNum", defaultValue = "1") Integer pageNum,
+            @RequestParam(value = "pageSize", defaultValue = "10") Integer pageSize,
+            @RequestParam(value = "categoryId", required = false) Long categoryId,
+            @RequestParam(value = "tagId", required = false) Long tagId,
+            @RequestParam(value = "keyword", required = false) String keyword,
+            @RequestParam(value = "status", required = false) Integer status,
+            @RequestParam(value = "isPublic", required = false) Integer isPublic) {
         
         PageResult<ArticleVO> pageResult = articleService.getArticleList(pageNum, pageSize, categoryId, tagId, keyword, status, isPublic);
         return Result.success(pageResult);
@@ -149,7 +128,7 @@ public class ArticleController {
      * 增加文章阅读量
      */
     @PostMapping("/{id}/view")
-    public Result<Void> increaseViewCount(@PathVariable Long id) {
+    public Result<Void> increaseViewCount(@PathVariable("id") Long id) {
         boolean success = articleService.increaseViewCount(id);
         if (!success) {
             return Result.notFound("文章不存在，阅读量增加失败");
@@ -162,8 +141,8 @@ public class ArticleController {
      */
     @PostMapping("/{id}/ai-status")
     public Result<Void> updateAiStatus(
-            @PathVariable Long id,
-            @RequestParam @NotNull Integer aiStatus,
+            @PathVariable("id") Long id,
+            @RequestParam("aiStatus") @NotNull Integer aiStatus,
             @RequestParam(required = false) String summary) {
         
         boolean success = articleService.updateAiStatus(id, aiStatus, summary);
@@ -178,13 +157,13 @@ public class ArticleController {
      */
     @GetMapping("/my")
     public Result<PageResult<ArticleVO>> getMyArticles(
-            @RequestParam(defaultValue = "1") Integer pageNum,
-            @RequestParam(defaultValue = "10") Integer pageSize,
-            @RequestParam(required = false) Long categoryId,
-            @RequestParam(required = false) Long tagId,
-            @RequestParam(required = false) String keyword,
-            @RequestParam(required = false) Integer status,
-            @RequestParam(required = false) Integer isPublic) {
+            @RequestParam(value = "pageNum", defaultValue = "1") Integer pageNum,
+            @RequestParam(value = "pageSize", defaultValue = "10") Integer pageSize,
+            @RequestParam(value = "categoryId", required = false) Long categoryId,
+            @RequestParam(value = "tagId", required = false) Long tagId,
+            @RequestParam(value = "keyword", required = false) String keyword,
+            @RequestParam(value = "status", required = false) Integer status,
+            @RequestParam(value = "isPublic", required = false) Integer isPublic) {
         
         PageResult<ArticleVO> pageResult = articleService.getMyArticles(pageNum, pageSize, categoryId, tagId, keyword, status, isPublic);
         return Result.success(pageResult);
@@ -195,12 +174,12 @@ public class ArticleController {
      */
     @GetMapping("/user/{userId}")
     public Result<PageResult<ArticleVO>> getUserArticles(
-            @PathVariable Long userId,
-            @RequestParam(defaultValue = "1") Integer pageNum,
-            @RequestParam(defaultValue = "10") Integer pageSize,
-            @RequestParam(required = false) Long categoryId,
-            @RequestParam(required = false) Long tagId,
-            @RequestParam(required = false) String keyword) {
+            @PathVariable("userId") Long userId,
+            @RequestParam(value = "pageNum", defaultValue = "1") Integer pageNum,
+            @RequestParam(value = "pageSize", defaultValue = "10") Integer pageSize,
+            @RequestParam(value = "categoryId", required = false) Long categoryId,
+            @RequestParam(value = "tagId", required = false) Long tagId,
+            @RequestParam(value = "keyword", required = false) String keyword) {
         
         PageResult<ArticleVO> pageResult = articleService.getUserArticles(userId, pageNum, pageSize, categoryId, tagId, keyword);
         return Result.success(pageResult);
@@ -221,8 +200,8 @@ public class ArticleController {
     @PutMapping("/batch-status")
     public Result<Void> batchUpdateStatus(
             @RequestBody List<Long> articleIds,
-            @RequestParam(required = false) Integer status,
-            @RequestParam(required = false) Integer isPublic) {
+            @RequestParam(value = "status", required = false) Integer status,
+            @RequestParam(value = "isPublic", required = false) Integer isPublic) {
         
         boolean success = articleService.batchUpdateStatus(articleIds, status, isPublic);
         if (!success) {
@@ -235,8 +214,9 @@ public class ArticleController {
      * 文章详情（含视频信息和时间戳目录）
      */
     @GetMapping("/{id}/detail")
-    public Result<ArticleDetailVO> detail(@PathVariable Long id) {
+    public Result<ArticleDetailVO> detail(@PathVariable("id") Long id) {
         ArticleDetailVO detail = articleService.getDetail(id);
+        recordReadingHistory(id);
         return Result.success(detail);
     }
 
@@ -245,7 +225,7 @@ public class ArticleController {
      */
     @PostMapping("/save")
     public Result<Void> save(@RequestBody @Valid ArticleSaveDTO dto) {
-        Long currentUserId = getCurrentUserId();
+        Long currentUserId = UserContextHolder.requireUserId();
         articleService.save(dto, currentUserId);
         return Result.success("文章保存成功", null);
     }
@@ -254,8 +234,24 @@ public class ArticleController {
      * 获取文章的时间戳目录
      */
     @GetMapping("/{id}/timestamps")
-    public Result<List<ArticleTimestamp>> timestamps(@PathVariable Long id) {
+    public Result<List<ArticleTimestamp>> timestamps(@PathVariable("id") Long id) {
         List<ArticleTimestamp> timestamps = articleService.getTimestamps(id);
+        return Result.success(timestamps);
+    }
+
+    /**
+     * 从文章内容中提取时间戳
+     * 前端发送文章内容，后端使用 TimestampExtractor 解析并返回时间戳列表
+     */
+    @PostMapping("/{id}/extract-timestamps")
+    public Result<List<ArticleTimestamp>> extractTimestamps(
+            @PathVariable("id") Long id,
+            @RequestBody Map<String, String> request) {
+        String content = request.get("content");
+        if (content == null || content.trim().isEmpty()) {
+            return Result.badRequest("文章内容不能为空");
+        }
+        List<ArticleTimestamp> timestamps = TimestampExtractor.extractTimestamps(content);
         return Result.success(timestamps);
     }
 
@@ -266,9 +262,33 @@ public class ArticleController {
      */
     @PutMapping("/{id}/allow-export")
     public Result<Void> updateAllowExport(
-            @PathVariable Long id,
-            @RequestParam @NotNull Integer allowExport) {
+            @PathVariable("id") Long id,
+            @RequestParam(value = "allowExport") @NotNull Integer allowExport) {
         articleService.updateAllowExport(id, allowExport);
         return Result.success("导出权限设置已更新", null);
+    }
+
+    @PutMapping("/{id}/pin")
+    public Result<Void> pinArticle(@PathVariable("id") Long id) {
+        articleService.pinArticle(id);
+        return Result.success("文章已置顶", null);
+    }
+
+    @PutMapping("/{id}/unpin")
+    public Result<Void> unpinArticle(@PathVariable("id") Long id) {
+        articleService.unpinArticle(id);
+        return Result.success("已取消置顶", null);
+    }
+
+    private void recordReadingHistory(Long articleId) {
+        Long userId = UserContextHolder.getUserId();
+        if (userId == null) {
+            return;
+        }
+        try {
+            readingProgressService.saveOrUpdateProgress(userId, articleId, null, null);
+        } catch (Exception e) {
+            // 阅读历史记录失败不影响文章查看
+        }
     }
 }

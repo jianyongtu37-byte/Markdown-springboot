@@ -35,6 +35,11 @@ public class ArticleDetailVO {
     private String authorName;
 
     /**
+     * 作者头像URL
+     */
+    private String authorAvatar;
+
+    /**
      * 分类ID
      */
     private Long categoryId;
@@ -83,6 +88,10 @@ public class ArticleDetailVO {
      * 允许他人导出：0-禁止，1-允许
      */
     private Integer allowExport;
+
+    private Integer isPinned;
+
+    private LocalDateTime pinnedTime;
 
     /**
      * 点赞数（从 article 表直接带出，无需额外查询）

@@ -50,7 +50,7 @@ public class DeepSeekAiSummaryServiceImpl implements AiSummaryService {
 
     private WebClient webClient;
 
-    private WebClient getWebClient() {
+    WebClient getWebClient() {
         if (webClient == null) {
             webClient = WebClient.builder()
                     .baseUrl(apiUrl + "/chat/completions")
@@ -232,10 +232,17 @@ public class DeepSeekAiSummaryServiceImpl implements AiSummaryService {
         return "DeepSeek AI Summary Service";
     }
 
-    @Async("aiTaskExecutor")
+    @Async("aiExecutor")
     public CompletableFuture<String> generateSummaryAsync(String content) {
-        String summary = generateSummary(content);
-        return CompletableFuture.completedFuture(summary);
+        try {
+            String summary = generateSummary(content);
+            return CompletableFuture.completedFuture(summary);
+        } catch (Exception e) {
+            log.error("异步生成AI摘要失败: {}", e.getMessage(), e);
+            CompletableFuture<String> future = new CompletableFuture<>();
+            future.completeExceptionally(e);
+            return future;
+        }
     }
 
     /**

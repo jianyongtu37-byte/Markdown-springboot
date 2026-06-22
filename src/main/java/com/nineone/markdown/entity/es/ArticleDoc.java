@@ -43,21 +43,19 @@ public class ArticleDoc {
     private Long categoryId;
 
     /**
-     * 文章标题 - 使用IK分词器进行深度分词
-     * ik_max_word: 会将文本做最细粒度的拆分（适合索引）
-     * ik_smart: 会将文本做最粗粒度的拆分（适合搜索）
+     * 文章标题 - 使用 ik_max_word 索引（最大粒度分词），ik_smart 搜索（粗粒度分词）
      */
     @Field(type = FieldType.Text, analyzer = "ik_max_word", searchAnalyzer = "ik_smart")
     private String title;
 
     /**
-     * 文章内容 - 使用IK分词器进行深度分词
+     * 文章内容 - 使用 ik_max_word 索引（最大粒度分词），ik_smart 搜索（粗粒度分词）
      */
     @Field(type = FieldType.Text, analyzer = "ik_max_word", searchAnalyzer = "ik_smart")
     private String content;
 
     /**
-     * AI生成的摘要
+     * AI生成的摘要 - 使用 ik_max_word 索引（最大粒度分词），ik_smart 搜索（粗粒度分词）
      */
     @Field(type = FieldType.Text, analyzer = "ik_max_word", searchAnalyzer = "ik_smart")
     private String summary;
@@ -105,7 +103,7 @@ public class ArticleDoc {
     private LocalDateTime updateTime;
 
     /**
-     * 标签列表，用逗号分隔 - 使用IK分词器进行分词
+     * 标签列表，用逗号分隔 - 使用 ik_max_word 索引（最大粒度分词），ik_smart 搜索（粗粒度分词）
      */
     @Field(type = FieldType.Text, analyzer = "ik_max_word", searchAnalyzer = "ik_smart")
     private String tags;

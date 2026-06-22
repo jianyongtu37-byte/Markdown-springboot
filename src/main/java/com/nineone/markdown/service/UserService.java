@@ -2,6 +2,7 @@ package com.nineone.markdown.service;
 
 import com.baomidou.mybatisplus.extension.service.IService;
 import com.nineone.markdown.entity.User;
+import com.nineone.markdown.vo.UserProfileVO;
 import com.nineone.markdown.vo.UserVO;
 
 import java.util.List;
@@ -74,4 +75,6 @@ public interface UserService extends IService<User> {
      * @return 用户数量
      */
     Long getUserCount();
+
+    UserProfileVO getUserProfile(Long userId);
 }

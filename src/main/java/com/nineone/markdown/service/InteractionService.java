@@ -1,6 +1,6 @@
 package com.nineone.markdown.service;
 
-import com.nineone.markdown.common.PageResult;
+import com.nineone.common.result.PageResult;
 import com.nineone.markdown.entity.ArticleComment;
 import com.nineone.markdown.vo.ArticleVO;
 import com.nineone.markdown.vo.CommentVO;
@@ -37,6 +37,15 @@ public interface InteractionService {
      * @return 点赞数
      */
     int getLikeCount(Long articleId);
+
+    /**
+     * 获取当前用户点赞的文章列表
+     * @param userId 用户ID
+     * @param pageNum 页码
+     * @param pageSize 每页大小
+     * @return 分页结果
+     */
+    PageResult<ArticleVO> getMyLikes(Long userId, Integer pageNum, Integer pageSize);
 
     // ==================== 收藏 ====================
 
@@ -114,6 +123,15 @@ public interface InteractionService {
      * @return 待审核评论列表
      */
     List<ArticleComment> getPendingComments();
+
+    /**
+     * 获取当前用户的评论历史
+     * @param userId 用户ID
+     * @param pageNum 页码
+     * @param pageSize 每页大小
+     * @return 分页的评论列表
+     */
+    PageResult<CommentVO> getMyComments(Long userId, Integer pageNum, Integer pageSize);
 
     // ==================== 热门文章 ====================
 

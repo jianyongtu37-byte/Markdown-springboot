@@ -12,11 +12,14 @@ import com.nineone.markdown.service.CategoryService;
 import com.nineone.markdown.util.UserContextHolder;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.Assert;
 
 import java.util.List;
+import java.util.stream.Collectors;
 
 /**
  * 分类服务实现类
@@ -31,22 +34,24 @@ public class CategoryServiceImpl extends ServiceImpl<CategoryMapper, Category> i
 
     @Override
     @Transactional(rollbackFor = Exception.class)
+    @CacheEvict(value = "categories", allEntries = true)
     public Long createCategory(Category category) {
         // 参数验证
         Assert.notNull(category, "分类不能为空");
         Assert.hasText(category.getName(), "分类名称不能为空");
-        
-        // 检查分类名称是否已存在（忽略数据权限，需要查看所有用户的分类）
-        Category existingCategory = categoryMapper.selectByNameIgnorePermission(category.getName());
-        if (existingCategory != null) {
-            throw new IllegalArgumentException("分类名称已存在");
-        }
-        
-        // 设置用户ID - 确保用户创建的分类属于当前用户
+
+        // 获取当前用户ID - 确保用户创建的分类属于当前用户
         Long currentUserId = UserContextHolder.getUserId();
         if (currentUserId == null) {
             throw new IllegalStateException("用户未登录，无法创建分类");
         }
+
+        // 检查分类名称是否已存在（数据库唯一约束是 name + user_id，只检查当前用户）
+        Category existingCategory = categoryMapper.selectByNameAndUserId(category.getName(), currentUserId);
+        if (existingCategory != null) {
+            throw new IllegalArgumentException("分类名称已存在");
+        }
+
         category.setUserId(currentUserId);
         
         // 设置是否为默认分类（用户创建的分类不是系统默认分类）
@@ -85,6 +90,7 @@ public class CategoryServiceImpl extends ServiceImpl<CategoryMapper, Category> i
 
     @Override
     @Transactional(rollbackFor = Exception.class)
+    @CacheEvict(value = "categories", allEntries = true)
     public boolean updateCategory(Category category) {
         Assert.notNull(category, "分类不能为空");
         Assert.notNull(category.getId(), "分类ID不能为空");
@@ -98,10 +104,11 @@ public class CategoryServiceImpl extends ServiceImpl<CategoryMapper, Category> i
         // 检查当前用户是否有权限修改这个分类
         checkCategoryPermission(existingCategory);
         
-        // 如果名称有变化，检查新名称是否已存在（忽略数据权限，需要查看所有用户的分类）
+        // 如果名称有变化，检查新名称是否已存在（数据库唯一约束是 name + user_id）
         if (!existingCategory.getName().equals(category.getName())) {
-            Category duplicateCategory = categoryMapper.selectByNameIgnorePermission(category.getName());
-            if (duplicateCategory != null) {
+            Category duplicateCategory = categoryMapper.selectByNameAndUserId(
+                    category.getName(), existingCategory.getUserId());
+            if (duplicateCategory != null && !duplicateCategory.getId().equals(category.getId())) {
                 throw new IllegalArgumentException("分类名称已存在");
             }
         }
@@ -118,6 +125,7 @@ public class CategoryServiceImpl extends ServiceImpl<CategoryMapper, Category> i
 
     @Override
     @Transactional(rollbackFor = Exception.class)
+    @CacheEvict(value = "categories", allEntries = true)
     public boolean deleteCategory(Long id) {
         Assert.notNull(id, "分类ID不能为空");
         
@@ -149,15 +157,26 @@ public class CategoryServiceImpl extends ServiceImpl<CategoryMapper, Category> i
     }
 
     @Override
+    @Cacheable(value = "categories", key = "T(com.nineone.markdown.util.UserContextHolder).getUserId() == null ? 'anon:all' : T(com.nineone.markdown.util.UserContextHolder).getUserId() + ':all'", unless = "#result == null || #result.isEmpty()")
     public List<Category> getAllCategories() {
         // 按排序字段升序排序
         LambdaQueryWrapper<Category> queryWrapper = new LambdaQueryWrapper<>();
         queryWrapper.orderByAsc(Category::getSortOrder);
-        return categoryMapper.selectList(queryWrapper);
+        List<Category> categories = categoryMapper.selectList(queryWrapper);
+
+        // 未登录用户只能看到公共分类（DataPermissionInterceptor对未登录用户不注入过滤条件）
+        Long currentUserId = UserContextHolder.getUserId();
+        if (currentUserId == null && !UserContextHolder.isAdmin()) {
+            return categories.stream()
+                    .filter(c -> c.getUserId() == null || c.getUserId() == 0)
+                    .collect(Collectors.toList());
+        }
+        return categories;
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
+    @CacheEvict(value = "categories", allEntries = true)
     public boolean updateSortOrder(Long id, Integer sortOrder) {
         Assert.notNull(id, "分类ID不能为空");
         Assert.notNull(sortOrder, "排序值不能为空");

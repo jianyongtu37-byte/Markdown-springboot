@@ -2,6 +2,8 @@ package com.nineone.markdown.dto;
 
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Size;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 import lombok.AllArgsConstructor;
@@ -18,6 +20,8 @@ public class RegisterRequest {
     private String username;
     
     @NotBlank(message = "密码不能为空")
+    @Size(min = 8, max = 100, message = "密码长度必须在8-100之间")
+    @Pattern(regexp = "^(?=.*[A-Za-z])(?=.*\\d).+$", message = "密码必须包含至少一个字母和一个数字")
     private String password;
     
     @NotBlank(message = "确认密码不能为空")
@@ -25,6 +29,7 @@ public class RegisterRequest {
     
     private String nickname;
     
+    @NotBlank(message = "邮箱不能为空")
     @Email(message = "邮箱格式不正确")
     private String email;
 }

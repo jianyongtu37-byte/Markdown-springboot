@@ -1,16 +1,14 @@
 package com.nineone.markdown.controller;
 
-import com.nineone.markdown.common.PageResult;
-import com.nineone.markdown.common.Result;
+import com.nineone.common.result.PageResult;
+import com.nineone.common.result.Result;
 import com.nineone.markdown.entity.ArticleComment;
-import com.nineone.markdown.exception.AuthenticationException;
-import com.nineone.markdown.security.CustomUserDetails;
 import com.nineone.markdown.service.InteractionService;
+import com.nineone.markdown.util.UserContextHolder;
 import com.nineone.markdown.vo.ArticleVO;
 import com.nineone.markdown.vo.CommentVO;
 import lombok.RequiredArgsConstructor;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -26,29 +24,14 @@ public class InteractionController {
 
     private final InteractionService interactionService;
 
-    /**
-     * 获取当前登录用户的ID
-     */
-    private Long getCurrentUserId() {
-        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-        if (authentication == null || !authentication.isAuthenticated()) {
-            throw new AuthenticationException("用户未认证", "UNAUTHENTICATED");
-        }
-        Object principal = authentication.getPrincipal();
-        if (principal instanceof CustomUserDetails) {
-            return ((CustomUserDetails) principal).getId();
-        }
-        throw new AuthenticationException("用户未登录或登录已过期", "TOKEN_EXPIRED");
-    }
-
     // ==================== 点赞 ====================
 
     /**
      * 点赞/取消点赞文章
      */
     @PostMapping("/articles/{articleId}/like")
-    public Result<Map<String, Object>> toggleLike(@PathVariable Long articleId) {
-        Long userId = getCurrentUserId();
+    public Result<Map<String, Object>> toggleLike(@PathVariable("articleId") Long articleId) {
+        Long userId = UserContextHolder.requireUserId();
         boolean liked = interactionService.toggleLike(articleId, userId);
         int likeCount = interactionService.getLikeCount(articleId);
         return Result.success(Map.of("liked", liked, "likeCount", likeCount));
@@ -58,8 +41,8 @@ public class InteractionController {
      * 查询用户是否已点赞
      */
     @GetMapping("/articles/{articleId}/like/status")
-    public Result<Map<String, Object>> getLikeStatus(@PathVariable Long articleId) {
-        Long userId = getCurrentUserId();
+    public Result<Map<String, Object>> getLikeStatus(@PathVariable("articleId") Long articleId) {
+        Long userId = UserContextHolder.requireUserId();
         boolean liked = interactionService.isLiked(articleId, userId);
         int likeCount = interactionService.getLikeCount(articleId);
         return Result.success(Map.of("liked", liked, "likeCount", likeCount));
@@ -69,9 +52,21 @@ public class InteractionController {
      * 获取文章的点赞数
      */
     @GetMapping("/articles/{articleId}/like/count")
-    public Result<Map<String, Object>> getLikeCount(@PathVariable Long articleId) {
+    public Result<Map<String, Object>> getLikeCount(@PathVariable("articleId") Long articleId) {
         int likeCount = interactionService.getLikeCount(articleId);
         return Result.success(Map.of("likeCount", likeCount));
+    }
+
+    /**
+     * 获取我的点赞列表
+     */
+    @GetMapping("/likes")
+    public Result<PageResult<ArticleVO>> getMyLikes(
+            @RequestParam(value = "pageNum", defaultValue = "1") Integer pageNum,
+            @RequestParam(value = "pageSize", defaultValue = "10") Integer pageSize) {
+        Long userId = UserContextHolder.requireUserId();
+        PageResult<ArticleVO> result = interactionService.getMyLikes(userId, pageNum, pageSize);
+        return Result.success(result);
     }
 
     // ==================== 收藏 ====================
@@ -80,9 +75,9 @@ public class InteractionController {
      * 收藏/取消收藏文章
      */
     @PostMapping("/articles/{articleId}/favorite")
-    public Result<Map<String, Object>> toggleFavorite(@PathVariable Long articleId,
-                                                       @RequestParam(required = false, defaultValue = "默认收藏夹") String folderName) {
-        Long userId = getCurrentUserId();
+    public Result<Map<String, Object>> toggleFavorite(@PathVariable("articleId") Long articleId,
+                                                       @RequestParam(value = "folderName", required = false, defaultValue = "默认收藏夹") String folderName) {
+        Long userId = UserContextHolder.requireUserId();
         boolean favorited = interactionService.toggleFavorite(articleId, userId, folderName);
         return Result.success(Map.of("favorited", favorited));
     }
@@ -91,8 +86,8 @@ public class InteractionController {
      * 查询用户是否已收藏
      */
     @GetMapping("/articles/{articleId}/favorite/status")
-    public Result<Map<String, Object>> getFavoriteStatus(@PathVariable Long articleId) {
-        Long userId = getCurrentUserId();
+    public Result<Map<String, Object>> getFavoriteStatus(@PathVariable("articleId") Long articleId) {
+        Long userId = UserContextHolder.requireUserId();
         boolean favorited = interactionService.isFavorited(articleId, userId);
         return Result.success(Map.of("favorited", favorited));
     }
@@ -102,10 +97,10 @@ public class InteractionController {
      */
     @GetMapping("/favorites")
     public Result<PageResult<ArticleVO>> getMyFavorites(
-            @RequestParam(defaultValue = "1") Integer pageNum,
-            @RequestParam(defaultValue = "10") Integer pageSize,
-            @RequestParam(required = false) String folderName) {
-        Long userId = getCurrentUserId();
+            @RequestParam(value = "pageNum", defaultValue = "1") Integer pageNum,
+            @RequestParam(value = "pageSize", defaultValue = "10") Integer pageSize,
+            @RequestParam(value = "folderName", required = false) String folderName) {
+        Long userId = UserContextHolder.requireUserId();
         PageResult<ArticleVO> result = interactionService.getMyFavorites(userId, pageNum, pageSize, folderName);
         return Result.success(result);
     }
@@ -115,7 +110,7 @@ public class InteractionController {
      */
     @GetMapping("/favorites/folder-names")
     public Result<List<String>> getMyFolderNames() {
-        Long userId = getCurrentUserId();
+        Long userId = UserContextHolder.requireUserId();
         List<String> folders = interactionService.getMyFolderNames(userId);
         return Result.success(folders);
     }
@@ -126,9 +121,9 @@ public class InteractionController {
      * 添加评论
      */
     @PostMapping("/articles/{articleId}/comments")
-    public Result<Map<String, Object>> addComment(@PathVariable Long articleId,
-                                                   @RequestBody Map<String, String> body) {
-        Long userId = getCurrentUserId();
+    public Result<Map<String, Object>> addComment(@PathVariable("articleId") Long articleId,
+                                                    @RequestBody Map<String, String> body) {
+        Long userId = UserContextHolder.requireUserId();
         String content = body.get("content");
         Long parentId = body.containsKey("parentId") && body.get("parentId") != null
                 ? Long.parseLong(body.get("parentId")) : null;
@@ -141,9 +136,9 @@ public class InteractionController {
      */
     @GetMapping("/articles/{articleId}/comments")
     public Result<PageResult<CommentVO>> getComments(
-            @PathVariable Long articleId,
-            @RequestParam(defaultValue = "1") Integer pageNum,
-            @RequestParam(defaultValue = "10") Integer pageSize) {
+            @PathVariable("articleId") Long articleId,
+            @RequestParam(value = "pageNum", defaultValue = "1") Integer pageNum,
+            @RequestParam(value = "pageSize", defaultValue = "10") Integer pageSize) {
         PageResult<CommentVO> result = interactionService.getComments(articleId, pageNum, pageSize);
         return Result.success(result);
     }
@@ -152,8 +147,8 @@ public class InteractionController {
      * 删除评论
      */
     @DeleteMapping("/comments/{commentId}")
-    public Result<Void> deleteComment(@PathVariable Long commentId) {
-        Long userId = getCurrentUserId();
+    public Result<Void> deleteComment(@PathVariable("commentId") Long commentId) {
+        Long userId = UserContextHolder.requireUserId();
         interactionService.deleteComment(commentId, userId);
         return Result.success("评论已删除", null);
     }
@@ -162,18 +157,33 @@ public class InteractionController {
      * 审核评论（管理员功能）
      */
     @PutMapping("/comments/{commentId}/review")
-    public Result<Void> reviewComment(@PathVariable Long commentId, @RequestParam Integer status) {
+    @PreAuthorize("hasRole('ADMIN')")
+    public Result<Void> reviewComment(@PathVariable("commentId") Long commentId, @RequestParam("status") Integer status) {
         interactionService.reviewComment(commentId, status);
-        return Result.success("评论审核完成", null);
+        String message = status == 1 ? "审核通过" : "审核拒绝";
+        return Result.success(message, null);
     }
 
     /**
      * 获取待审核评论列表（管理员功能）
      */
     @GetMapping("/comments/pending")
+    @PreAuthorize("hasRole('ADMIN')")
     public Result<List<ArticleComment>> getPendingComments() {
         List<ArticleComment> comments = interactionService.getPendingComments();
         return Result.success(comments);
+    }
+
+    /**
+     * 获取当前用户的评论历史
+     */
+    @GetMapping("/comments/my")
+    public Result<PageResult<CommentVO>> getMyComments(
+            @RequestParam(value = "pageNum", defaultValue = "1") Integer pageNum,
+            @RequestParam(value = "pageSize", defaultValue = "10") Integer pageSize) {
+        Long userId = UserContextHolder.requireUserId();
+        PageResult<CommentVO> result = interactionService.getMyComments(userId, pageNum, pageSize);
+        return Result.success(result);
     }
 
     // ==================== 热门文章 ====================
@@ -183,8 +193,8 @@ public class InteractionController {
      */
     @GetMapping("/articles/hot")
     public Result<List<ArticleVO>> getHotArticles(
-            @RequestParam(defaultValue = "views") String type,
-            @RequestParam(defaultValue = "10") int limit) {
+            @RequestParam(value = "type", defaultValue = "views") String type,
+            @RequestParam(value = "limit", defaultValue = "10") int limit) {
         List<ArticleVO> articles = interactionService.getHotArticles(type, limit);
         return Result.success(articles);
     }

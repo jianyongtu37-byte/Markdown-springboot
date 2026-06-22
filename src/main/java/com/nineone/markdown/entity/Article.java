@@ -101,6 +101,7 @@ public class Article {
     /**
      * 软删除标记：0-未删除，1-已删除
      */
+    @TableLogic
     @TableField(value = "deleted")
     private Integer deleted;
 
@@ -109,6 +110,12 @@ public class Article {
      */
     @TableField(value = "allow_export")
     private Integer allowExport;
+
+    @TableField(value = "is_pinned")
+    private Integer isPinned;
+
+    @TableField(value = "pinned_time")
+    private LocalDateTime pinnedTime;
 
     /**
      * 创建时间

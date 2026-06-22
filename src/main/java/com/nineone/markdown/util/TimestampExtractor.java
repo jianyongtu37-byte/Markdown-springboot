@@ -62,15 +62,32 @@ public class TimestampExtractor {
      */
     private static List<ArticleTimestamp> extractTimestampsFromLine(String line, int lineNo) {
         List<ArticleTimestamp> timestamps = new ArrayList<>();
-        
+        // 记录已匹配的区间，避免不同模式对同一时间戳重复提取
+        List<int[]> matchedRegions = new ArrayList<>();
+
         for (Pattern pattern : TIMESTAMP_PATTERNS) {
             Matcher matcher = pattern.matcher(line);
-            
+
             while (matcher.find()) {
                 try {
+                    int matchStart = matcher.start();
+                    int matchEnd = matcher.end();
+
+                    // 检查是否与已匹配的区间重叠
+                    boolean overlaps = false;
+                    for (int[] region : matchedRegions) {
+                        if (matchStart < region[1] && matchEnd > region[0]) {
+                            overlaps = true;
+                            break;
+                        }
+                    }
+                    if (overlaps) {
+                        continue;
+                    }
+
                     int minutes = 0;
                     int seconds = 0;
-                    
+
                     // 根据不同的模式组提取分钟和秒
                     if (pattern.pattern().contains("[分时]") && !pattern.pattern().contains("秒")) {
                         // 格式4: 只有分钟
@@ -85,24 +102,26 @@ public class TimestampExtractor {
                         minutes = Integer.parseInt(matcher.group(1));
                         seconds = Integer.parseInt(matcher.group(2));
                     }
-                    
+
                     // 验证时间合理性
                     if (isValidTime(minutes, seconds)) {
+                        matchedRegions.add(new int[]{matchStart, matchEnd});
+
                         int totalSeconds = minutes * 60 + seconds;
                         String label = formatTimeLabel(minutes, seconds);
-                        
+
                         // 提取时间戳附近的内容作为摘要
-                        String excerpt = extractExcerpt(line, matcher.start(), matcher.end());
-                        
+                        String excerpt = extractExcerpt(line, matchStart, matchEnd);
+
                         ArticleTimestamp timestamp = ArticleTimestamp.builder()
                                 .label(label)
                                 .seconds(totalSeconds)
                                 .excerpt(excerpt)
                                 .lineNo(lineNo)
                                 .build();
-                        
+
                         timestamps.add(timestamp);
-                        log.debug("提取到时间戳: {} ({}秒), 行号: {}, 摘要: {}", 
+                        log.debug("提取到时间戳: {} ({}秒), 行号: {}, 摘要: {}",
                                 label, totalSeconds, lineNo, excerpt);
                     }
                 } catch (NumberFormatException e) {
@@ -110,7 +129,7 @@ public class TimestampExtractor {
                 }
             }
         }
-        
+
         return timestamps;
     }
 
@@ -189,13 +208,13 @@ public class TimestampExtractor {
      * @return 时间标签，如 "01:27"
      */
     public static String secondsToLabel(int totalSeconds) {
-        if (totalSeconds < 0) {
+        if (totalSeconds <= 0) {
             return "00:00";
         }
-        
+
         int minutes = totalSeconds / 60;
         int seconds = totalSeconds % 60;
-        
+
         return formatTimeLabel(minutes, seconds);
     }
 

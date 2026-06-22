@@ -3,14 +3,21 @@ package com.nineone.markdown.service.impl;
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.elasticsearch._types.FieldValue;
 import co.elastic.clients.elasticsearch._types.query_dsl.*;
+import co.elastic.clients.elasticsearch.core.BulkRequest;
+import co.elastic.clients.elasticsearch.core.BulkResponse;
 import co.elastic.clients.elasticsearch.core.SearchRequest;
 import co.elastic.clients.elasticsearch.core.SearchResponse;
+import co.elastic.clients.elasticsearch.core.ScrollRequest;
+import co.elastic.clients.elasticsearch.core.ScrollResponse;
+import co.elastic.clients.elasticsearch.core.bulk.BulkResponseItem;
 import co.elastic.clients.elasticsearch.core.search.Highlight;
 import co.elastic.clients.elasticsearch.core.search.HighlightField;
 import co.elastic.clients.elasticsearch.core.search.Hit;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.nineone.markdown.entity.Article;
 import com.nineone.markdown.entity.ArticleTag;
+import com.nineone.markdown.entity.Category;
 import com.nineone.markdown.entity.Tag;
 import com.nineone.markdown.entity.User;
 import com.nineone.markdown.entity.es.ArticleDoc;
@@ -25,6 +32,7 @@ import com.nineone.markdown.vo.SearchResultVO;
 import com.nineone.markdown.vo.TagVO;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
@@ -40,12 +48,16 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 /**
- * 搜索服务实现类
+ * 搜索服务实现类（Elasticsearch 版本）
+ * 仅在 spring.data.elasticsearch.repositories.enabled=true 时加载
  */
 @Service
+@ConditionalOnProperty(name = "spring.data.elasticsearch.repositories.enabled", havingValue = "true", matchIfMissing = true)
 @RequiredArgsConstructor
 @Slf4j
 public class SearchServiceImpl implements SearchService {
+
+    private static final String INDEX_NAME = "article_index";
 
     private final ArticleDocRepository articleDocRepository;
     private final ArticleMapper articleMapper;
@@ -62,79 +74,8 @@ public class SearchServiceImpl implements SearchService {
         Assert.isTrue(pageSize != null && pageSize > 0 && pageSize <= 100, "每页大小必须在1-100之间");
 
         try {
-            // 构建高亮查询
-            Highlight highlight = Highlight.of(h -> h
-                    .fields("title", HighlightField.of(hf -> hf
-                            .preTags("<em>")
-                            .postTags("</em>")))
-                    .fields("content", HighlightField.of(hf -> hf
-                            .preTags("<em>")
-                            .postTags("</em>")
-                            .fragmentSize(200)
-                            .numberOfFragments(3)))
-                    .fields("summary", HighlightField.of(hf -> hf
-                            .preTags("<em>")
-                            .postTags("</em>")))
-                    .fields("tags", HighlightField.of(hf -> hf
-                            .preTags("<em>")
-                            .postTags("</em>")))
-            );
-
-            // 构建查询条件
-            Query query = Query.of(q -> q
-                    .bool(b -> b
-                            .must(m -> m
-                                    .multiMatch(mm -> mm
-                                            .query(keyword)
-                                            .fields("title^3", "content^2", "summary^1.5", "tags^2")
-                                            .type(TextQueryType.BestFields)
-                                            .fuzziness("AUTO")
-                                    )
-                            )
-                            .filter(f -> f
-                                    .term(t -> t
-                                            .field("status")
-                                            .value(FieldValue.of(1))
-                                    )
-                            )
-                            .filter(f -> f
-                                    .term(t -> t
-                                            .field("isPublic")
-                                            .value(FieldValue.of(1))
-                                    )
-                            )
-                    )
-            );
-
-            // 构建搜索请求
-            SearchRequest searchRequest = SearchRequest.of(s -> s
-                    .index("article_index")
-                    .query(query)
-                    .highlight(highlight)
-                    .from((pageNum - 1) * pageSize)
-                    .size(pageSize)
-                    .sort(so -> so
-                            .score(si -> si
-                                    .order(co.elastic.clients.elasticsearch._types.SortOrder.Desc)
-                            )
-                    )
-            );
-
-            // 执行搜索
-            SearchResponse<ArticleDoc> response = elasticsearchClient.search(searchRequest, ArticleDoc.class);
-
-            // 处理搜索结果
-            List<SearchResultVO> results = new ArrayList<>();
-            for (Hit<ArticleDoc> hit : response.hits().hits()) {
-                ArticleDoc doc = hit.source();
-                if (doc == null) continue;
-
-                SearchResultVO result = convertToSearchResultVO(doc, hit);
-                results.add(result);
-            }
-
-            return results;
-
+            SearchResponse<ArticleDoc> response = executeSearch(keyword, pageNum, pageSize);
+            return extractResults(response);
         } catch (IOException e) {
             log.error("Elasticsearch搜索失败，关键词: {}", keyword, e);
             throw new RuntimeException("搜索服务暂时不可用，请稍后重试", e);
@@ -143,13 +84,99 @@ public class SearchServiceImpl implements SearchService {
 
     @Override
     public Page<SearchResultVO> searchArticlesWithPage(String keyword, Integer pageNum, Integer pageSize) {
-        List<SearchResultVO> results = searchArticles(keyword, pageNum, pageSize);
-        
-        // 获取总记录数（这里简化处理，实际应该从ES获取总数）
-        long total = articleDocRepository.count();
-        
-        Pageable pageable = PageRequest.of(pageNum - 1, pageSize);
-        return new PageImpl<>(results, pageable, total);
+        Assert.hasText(keyword, "搜索关键词不能为空");
+        Assert.isTrue(pageNum != null && pageNum > 0, "页码必须大于0");
+        Assert.isTrue(pageSize != null && pageSize > 0 && pageSize <= 100, "每页大小必须在1-100之间");
+
+        try {
+            SearchResponse<ArticleDoc> response = executeSearch(keyword, pageNum, pageSize);
+            List<SearchResultVO> results = extractResults(response);
+
+            // 从 ES 响应中获取真实的匹配总数
+            long total = response.hits().total() != null ? response.hits().total().value() : 0;
+
+            Pageable pageable = PageRequest.of(pageNum - 1, pageSize);
+            return new PageImpl<>(results, pageable, total);
+        } catch (IOException e) {
+            log.error("Elasticsearch搜索失败，关键词: {}", keyword, e);
+            throw new RuntimeException("搜索服务暂时不可用，请稍后重试", e);
+        }
+    }
+
+    /**
+     * 执行 ES 搜索，返回原始响应（供 searchArticles 和 searchArticlesWithPage 共用）
+     */
+    private SearchResponse<ArticleDoc> executeSearch(String keyword, Integer pageNum, Integer pageSize) throws IOException {
+        Highlight highlight = Highlight.of(h -> h
+                .fields("title", HighlightField.of(hf -> hf
+                        .preTags("<em>")
+                        .postTags("</em>")))
+                .fields("content", HighlightField.of(hf -> hf
+                        .preTags("<em>")
+                        .postTags("</em>")
+                        .fragmentSize(200)
+                        .numberOfFragments(3)))
+                .fields("summary", HighlightField.of(hf -> hf
+                        .preTags("<em>")
+                        .postTags("</em>")))
+                .fields("tags", HighlightField.of(hf -> hf
+                        .preTags("<em>")
+                        .postTags("</em>")))
+        );
+
+        Query query = Query.of(q -> q
+                .bool(b -> b
+                        .must(m -> m
+                                .multiMatch(mm -> mm
+                                        .query(keyword)
+                                        .fields("title^3", "content^2", "summary^1.5", "tags^2")
+                                        .type(TextQueryType.BestFields)
+                                        .fuzziness("AUTO")
+                                )
+                        )
+                        .filter(f -> f
+                                .term(t -> t
+                                        .field("status")
+                                        .value(FieldValue.of(1))
+                                )
+                        )
+                        .filter(f -> f
+                                .term(t -> t
+                                        .field("isPublic")
+                                        .value(FieldValue.of(1))
+                                )
+                        )
+                )
+        );
+
+        SearchRequest searchRequest = SearchRequest.of(s -> s
+                .index(INDEX_NAME)
+                .query(query)
+                .highlight(highlight)
+                .from((pageNum - 1) * pageSize)
+                .size(pageSize)
+                .sort(so -> so
+                        .score(si -> si
+                                .order(co.elastic.clients.elasticsearch._types.SortOrder.Desc)
+                        )
+                )
+        );
+
+        return elasticsearchClient.search(searchRequest, ArticleDoc.class);
+    }
+
+    /**
+     * 从 ES 搜索响应中提取结果列表
+     */
+    private List<SearchResultVO> extractResults(SearchResponse<ArticleDoc> response) {
+        List<SearchResultVO> results = new ArrayList<>();
+        for (Hit<ArticleDoc> hit : response.hits().hits()) {
+            ArticleDoc doc = hit.source();
+            if (doc == null) continue;
+            SearchResultVO result = convertToSearchResultVO(doc, hit);
+            results.add(result);
+        }
+        return results;
     }
 
     @Override
@@ -263,14 +290,45 @@ public class SearchServiceImpl implements SearchService {
     @Override
     @Transactional
     public int batchIndexArticles(List<Long> articleIds) {
-        int successCount = 0;
-        for (Long articleId : articleIds) {
-            if (indexArticle(articleId)) {
-                successCount++;
-            }
+        if (articleIds == null || articleIds.isEmpty()) {
+            return 0;
         }
-        log.info("批量索引完成，总数: {}, 成功: {}", articleIds.size(), successCount);
-        return successCount;
+
+        try {
+            int totalSuccess = 0;
+            int batchSize = 200;
+
+            // 分批处理，避免 SQL IN 子句和 ES Bulk 请求过大
+            for (int i = 0; i < articleIds.size(); i += batchSize) {
+                List<Long> batchIds = articleIds.subList(i, Math.min(i + batchSize, articleIds.size()));
+
+                // 批量查询文章
+                List<Article> articles = articleMapper.selectBatchIds(batchIds);
+                if (articles.isEmpty()) {
+                    continue;
+                }
+
+                // 过滤：只索引已发布且公开的文章
+                articles = articles.stream()
+                        .filter(a -> a.getStatus().getCode() == 2 && a.getStatus().isPublic())
+                        .collect(Collectors.toList());
+
+                if (articles.isEmpty()) {
+                    continue;
+                }
+
+                // 批量构建 ArticleDoc 并写入 ES
+                int batchSuccess = bulkIndexToES(articles);
+                totalSuccess += batchSuccess;
+                log.debug("批量索引进度: 已处理 {}/{}, 本批成功 {}", Math.min(i + batchSize, articleIds.size()), articleIds.size(), batchSuccess);
+            }
+
+            log.info("批量索引完成，总数: {}, 成功: {}", articleIds.size(), totalSuccess);
+            return totalSuccess;
+        } catch (Exception e) {
+            log.error("批量索引失败", e);
+            return 0;
+        }
     }
 
     @Override
@@ -301,34 +359,188 @@ public class SearchServiceImpl implements SearchService {
     @Transactional
     public int rebuildAllIndexes() {
         log.info("开始重建所有文章索引...");
-        
-        // 获取所有已发布且公开的文章（忽略数据权限拦截器）
-        List<Article> articles = articleMapper.selectList(null);
-        articles = articles.stream()
-                .filter(article -> article.getStatus().getCode() == 2 && article.getStatus().isPublic())
-                .collect(Collectors.toList());
-        
-        log.info("找到 {} 篇需要索引的文章", articles.size());
-        
-        int successCount = 0;
-        for (Article article : articles) {
-            if (indexArticle(article.getId())) {
-                successCount++;
+
+        int totalSuccess = 0;
+        int pageNum = 1;
+        int batchSize = 100;
+
+        // 分页查询已发布且公开的文章，避免一次性加载全量数据
+        while (true) {
+            com.baomidou.mybatisplus.extension.plugins.pagination.Page<Article> page =
+                    new com.baomidou.mybatisplus.extension.plugins.pagination.Page<>(pageNum, batchSize);
+            LambdaQueryWrapper<Article> wrapper = new LambdaQueryWrapper<>();
+            wrapper.eq(Article::getStatus, com.nineone.markdown.enums.ArticleStatusEnum.PUBLIC);
+            IPage<Article> articlePage = articleMapper.selectPageIgnorePermission(page, wrapper);
+
+            List<Article> articles = articlePage.getRecords();
+            if (articles.isEmpty()) {
+                break;
             }
-            
-            // 每处理100条记录打印一次进度
-            if (successCount % 100 == 0) {
-                log.info("已索引 {} 篇文章...", successCount);
+
+            // 批量写入 ES
+            try {
+                int batchSuccess = bulkIndexToES(articles);
+                totalSuccess += batchSuccess;
+                log.info("已索引 {} 篇文章（本批 {}/{}）...", totalSuccess, batchSuccess, articles.size());
+            } catch (IOException e) {
+                log.error("本批索引失败，跳过 {} 篇文章", articles.size(), e);
+            }
+
+            // 如果已经是最后一页，退出
+            if (articles.size() < batchSize) {
+                break;
+            }
+            pageNum++;
+        }
+
+        log.info("索引重建完成，成功索引 {} 篇文章", totalSuccess);
+        return totalSuccess;
+    }
+
+    /**
+     * 批量构建 ArticleDoc 并通过 Bulk API 写入 ES
+     * 批量查询用户/分类/标签信息，避免 N+1 查询
+     */
+    private int bulkIndexToES(List<Article> articles) throws IOException {
+        // 批量查询用户信息
+        List<Long> userIds = articles.stream()
+                .map(Article::getUserId).distinct().collect(Collectors.toList());
+        Map<Long, User> userMap = new HashMap<>();
+        if (!userIds.isEmpty()) {
+            userMapper.selectBatchIds(userIds).forEach(u -> userMap.put(u.getId(), u));
+        }
+
+        // 批量查询分类信息
+        List<Long> categoryIds = articles.stream()
+                .map(Article::getCategoryId).filter(Objects::nonNull).distinct().collect(Collectors.toList());
+        Map<Long, Category> categoryMap = new HashMap<>();
+        if (!categoryIds.isEmpty()) {
+            categoryMapper.selectBatchIdsIgnorePermission(categoryIds).forEach(c -> categoryMap.put(c.getId(), c));
+        }
+
+        // 批量查询标签关联
+        List<Long> articleIds = articles.stream().map(Article::getId).collect(Collectors.toList());
+        Map<Long, String> articleTagsMap = new HashMap<>();
+        if (!articleIds.isEmpty()) {
+            LambdaQueryWrapper<ArticleTag> tagWrapper = new LambdaQueryWrapper<>();
+            tagWrapper.in(ArticleTag::getArticleId, articleIds);
+            List<ArticleTag> allTags = articleTagMapper.selectList(tagWrapper);
+
+            if (!allTags.isEmpty()) {
+                List<Long> tagIds = allTags.stream().map(ArticleTag::getTagId).distinct().collect(Collectors.toList());
+                Map<Long, Tag> tagMap = new HashMap<>();
+                tagMapper.selectBatchIds(tagIds).forEach(t -> tagMap.put(t.getId(), t));
+
+                // 按 articleId 分组拼接标签名
+                Map<Long, List<String>> grouped = new HashMap<>();
+                for (ArticleTag at : allTags) {
+                    Tag tag = tagMap.get(at.getTagId());
+                    if (tag != null) {
+                        grouped.computeIfAbsent(at.getArticleId(), k -> new ArrayList<>()).add(tag.getName());
+                    }
+                }
+                grouped.forEach((aid, names) -> articleTagsMap.put(aid, String.join(",", names)));
             }
         }
-        
-        log.info("索引重建完成，成功索引 {} 篇文章", successCount);
+
+        // 构建 ArticleDoc 列表
+        List<ArticleDoc> docs = new ArrayList<>();
+        for (Article article : articles) {
+            String authorName = Optional.ofNullable(userMap.get(article.getUserId()))
+                    .map(User::getNickname).orElse("未知作者");
+            String categoryName = Optional.ofNullable(article.getCategoryId())
+                    .map(categoryMap::get).map(Category::getName).orElse(null);
+            String tags = articleTagsMap.getOrDefault(article.getId(), "");
+            docs.add(ArticleDoc.fromArticle(article, authorName, categoryName, tags));
+        }
+
+        // 使用 Bulk API 批量写入
+        BulkRequest.Builder bulkBuilder = new BulkRequest.Builder();
+        for (ArticleDoc doc : docs) {
+            bulkBuilder.operations(op -> op
+                    .index(idx -> idx
+                            .index(INDEX_NAME)
+                            .id(String.valueOf(doc.getId()))
+                            .document(doc)
+                    )
+            );
+        }
+
+        BulkResponse bulkResponse = elasticsearchClient.bulk(bulkBuilder.build());
+
+        // 统计成功数
+        int successCount = 0;
+        if (bulkResponse.errors()) {
+            for (BulkResponseItem item : bulkResponse.items()) {
+                if (item.error() != null) {
+                    log.warn("ES 批量索引单条失败: id={}, error={}", item.id(), item.error().reason());
+                } else {
+                    successCount++;
+                }
+            }
+        } else {
+            successCount = docs.size();
+        }
+
         return successCount;
     }
 
     @Override
     public long getIndexStats() {
         return articleDocRepository.count();
+    }
+
+    @Override
+    public List<Long> getAllIndexedArticleIds() {
+        List<Long> ids = new ArrayList<>();
+        try {
+            SearchRequest initialRequest = SearchRequest.of(s -> s
+                    .index(INDEX_NAME)
+                    .size(1000)
+                    .source(sc -> sc.filter(f -> f.includes(Collections.emptyList())))
+            );
+            SearchResponse<Void> response = elasticsearchClient.search(initialRequest, Void.class);
+
+            while (true) {
+                List<Hit<Void>> hits = response.hits().hits();
+                if (hits.isEmpty()) {
+                    break;
+                }
+                for (Hit<Void> hit : hits) {
+                    if (hit.id() != null) {
+                        try {
+                            ids.add(Long.parseLong(hit.id()));
+                        } catch (NumberFormatException ignored) {
+                        }
+                    }
+                }
+                String scrollId = response.scrollId();
+                if (scrollId == null || hits.size() < 1000) {
+                    break;
+                }
+                ScrollRequest scrollRequest = ScrollRequest.of(s -> s
+                        .scrollId(scrollId).scroll(t -> t.time("60s")));
+                ScrollResponse<Void> scrollResponse = elasticsearchClient.scroll(scrollRequest, Void.class);
+                response = scrollResponseToSearchResponse(scrollResponse);
+            }
+
+            String finalScrollId = response.scrollId();
+            if (finalScrollId != null) {
+                elasticsearchClient.clearScroll(c -> c.scrollId(finalScrollId));
+            }
+        } catch (IOException e) {
+            log.error("获取 ES 索引文章 ID 列表失败", e);
+        }
+        return ids;
+    }
+
+    /**
+     * 将 ScrollResponse 转为 SearchResponse（保持代码结构一致）
+     */
+    private SearchResponse<Void> scrollResponseToSearchResponse(ScrollResponse<Void> scrollResponse) {
+        return SearchResponse.of(sr -> sr
+                .hits(scrollResponse.hits())
+                .scrollId(scrollResponse.scrollId()));
     }
 
     @Override
@@ -358,7 +570,7 @@ public class SearchServiceImpl implements SearchService {
             );
 
             SearchRequest searchRequest = SearchRequest.of(s -> s
-                    .index("article_index")
+                    .index(INDEX_NAME)
                     .query(query)
                     .size(limit)
                     .source(sc -> sc
@@ -506,7 +718,7 @@ public class SearchServiceImpl implements SearchService {
     /**
      * 异步索引文章
      */
-    @Async("aiTaskExecutor")
+    @Async("esExecutor")
     public void indexArticleAsync(Long articleId) {
         try {
             indexArticle(articleId);
@@ -518,7 +730,7 @@ public class SearchServiceImpl implements SearchService {
     /**
      * 异步删除文章索引
      */
-    @Async("aiTaskExecutor")
+    @Async("esExecutor")
     public void deleteArticleIndexAsync(Long articleId) {
         try {
             deleteArticleIndex(articleId);

@@ -104,4 +104,10 @@ public interface SearchService {
      * @return 建议列表
      */
     List<String> getSearchSuggestions(String prefix, int limit);
+
+    /**
+     * 获取 ES 索引中所有文档的 ID 列表（用于对账）
+     * @return 所有已索引的文章 ID
+     */
+    List<Long> getAllIndexedArticleIds();
 }

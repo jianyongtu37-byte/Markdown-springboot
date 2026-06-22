@@ -18,12 +18,15 @@ import java.awt.*;
 import java.awt.image.BufferedImage;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
+import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -53,6 +56,16 @@ public class ImageServiceImpl implements ImageService {
      */
     private static final List<String> ALLOWED_MIME_TYPES = List.of(
             "image/jpeg", "image/png", "image/gif", "image/webp", "image/bmp"
+    );
+
+    /**
+     * 文件头魔数 -> MIME 类型映射，用于防伪造 Content-Type
+     */
+    private static final Map<String, String> MAGIC_BYTES = Map.of(
+            "ffd8ff", "image/jpeg",
+            "89504e47", "image/png",
+            "47494638", "image/gif",
+            "424d", "image/bmp"
     );
 
     /**
@@ -97,6 +110,11 @@ public class ImageServiceImpl implements ImageService {
         String contentType = file.getContentType();
         if (contentType == null || !ALLOWED_MIME_TYPES.contains(contentType)) {
             throw new BizException("不支持的文件类型，仅支持JPEG、PNG、GIF、WebP、BMP格式");
+        }
+
+        // 魔数校验，防止伪造 Content-Type
+        if (!validateMagicBytes(file)) {
+            throw new BizException("文件类型与扩展名不匹配，拒绝上传");
         }
 
         // 获取文件扩展名
@@ -161,6 +179,74 @@ public class ImageServiceImpl implements ImageService {
 
         } catch (IOException e) {
             log.error("图片上传失败: {}", originalFilename, e);
+            throw new BizException("图片上传失败: " + e.getMessage());
+        }
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Image uploadImageBytes(byte[] data, String filename, String contentType, Long userId) {
+        if (data == null || data.length == 0) {
+            throw new BizException("图片数据不能为空");
+        }
+        if (data.length > MAX_FILE_SIZE) {
+            throw new BizException("图片文件大小不能超过5MB");
+        }
+        if (contentType == null || !ALLOWED_MIME_TYPES.contains(contentType)) {
+            throw new BizException("不支持的图片类型: " + contentType);
+        }
+
+        // 魔数校验，防止伪造 Content-Type
+        if (!validateMagicBytes(data)) {
+            throw new BizException("文件类型与扩展名不匹配，拒绝上传");
+        }
+
+        String extension = "";
+        if (filename != null && filename.contains(".")) {
+            extension = filename.substring(filename.lastIndexOf("."));
+        }
+
+        String dateStr = LocalDate.now().format(DateTimeFormatter.ofPattern("yyyy/MM/dd"));
+        String uniqueFileName = UUID.randomUUID() + extension;
+        String relativePath = dateStr + "/" + uniqueFileName;
+        String fullPath = uploadPath + "/" + relativePath;
+
+        try {
+            Path directoryPath = Paths.get(uploadPath, dateStr);
+            Files.createDirectories(directoryPath);
+            Files.write(Paths.get(fullPath), data);
+
+            int width = 0;
+            int height = 0;
+            String thumbnailRelativePath = null;
+            try {
+                BufferedImage bufferedImage = ImageIO.read(new File(fullPath));
+                if (bufferedImage != null) {
+                    width = bufferedImage.getWidth();
+                    height = bufferedImage.getHeight();
+                    thumbnailRelativePath = generateThumbnail(bufferedImage, dateStr, uniqueFileName, extension);
+                }
+            } catch (IOException e) {
+                log.warn("无法读取图片尺寸或生成缩略图: {}", filename, e);
+            }
+
+            Image image = Image.builder()
+                    .userId(userId)
+                    .originalName(filename)
+                    .storagePath(relativePath)
+                    .thumbnailPath(thumbnailRelativePath)
+                    .fileSize((long) data.length)
+                    .width(width)
+                    .height(height)
+                    .mimeType(contentType)
+                    .storageType("local")
+                    .build();
+
+            imageMapper.insert(image);
+            log.info("图片上传成功(字节), ID: {}, 路径: {}, 用户: {}", image.getId(), relativePath, userId);
+            return image;
+        } catch (IOException e) {
+            log.error("图片上传失败: {}", filename, e);
             throw new BizException("图片上传失败: " + e.getMessage());
         }
     }
@@ -239,6 +325,63 @@ public class ImageServiceImpl implements ImageService {
     @Override
     public Image getImageById(Long imageId) {
         return imageMapper.selectById(imageId);
+    }
+
+    /**
+     * 通过文件头魔数校验图片真实性，防止 Content-Type 伪造
+     */
+    private boolean validateMagicBytes(MultipartFile file) {
+        try (InputStream is = file.getInputStream()) {
+            byte[] header = new byte[4];
+            int read = is.read(header);
+            if (read < 4) {
+                return false;
+            }
+            String hex = HexFormat.of().formatHex(header).toLowerCase();
+            // 检查前 3 字节匹配
+            if (MAGIC_BYTES.containsKey(hex.substring(0, 6))) {
+                return true;
+            }
+            // 检查前 4 字节匹配 (BMP: 424d)
+            if (MAGIC_BYTES.containsKey(hex.substring(0, 4))) {
+                return true;
+            }
+            // WebP: RIFF header + WEBP at offset 8
+            if ("52494646".equals(hex) && file.getOriginalFilename() != null) {
+                byte[] extHeader = new byte[8];
+                int extRead = is.read(extHeader);
+                if (extRead >= 4) {
+                    String webpCheck = new String(extHeader, 4, 4);
+                    return "WEBP".equals(webpCheck);
+                }
+            }
+            return false;
+        } catch (IOException e) {
+            log.warn("魔数校验读取失败", e);
+            return false;
+        }
+    }
+
+    /**
+     * 通过文件头魔数校验图片真实性（字节数组版本）
+     */
+    private boolean validateMagicBytes(byte[] data) {
+        if (data == null || data.length < 4) {
+            return false;
+        }
+        String hex = HexFormat.of().formatHex(data, 0, Math.min(data.length, 4)).toLowerCase();
+        if (MAGIC_BYTES.containsKey(hex.substring(0, 6))) {
+            return true;
+        }
+        if (MAGIC_BYTES.containsKey(hex.substring(0, 4))) {
+            return true;
+        }
+        // WebP: RIFF....WEBP
+        if ("52494646".equals(hex) && data.length >= 12) {
+            String webpCheck = new String(data, 8, 4);
+            return "WEBP".equals(webpCheck);
+        }
+        return false;
     }
 
     /**

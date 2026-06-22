@@ -73,18 +73,24 @@ public class SecurityConfig {
             .csrf(AbstractHttpConfigurer::disable)
             .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
+                // 放行所有 OPTIONS 预检请求（单体直连，无网关处理跨域）
+                .requestMatchers(org.springframework.http.HttpMethod.OPTIONS, "/**").permitAll()
                 // 公开访问的接口
                 .requestMatchers("/api/auth/**").permitAll()
-                .requestMatchers("/api/articles/**").permitAll()  // 文章接口公开访问
-                .requestMatchers("/api/deepseek/**").permitAll()  // DeepSeek AI 接口公开访问
                 .requestMatchers("/swagger-ui/**", "/v3/api-docs/**").permitAll()
                 .requestMatchers("/error").permitAll()
                 .requestMatchers("/LoginView/**", "/RegisterView/**").permitAll()
+                // 文章读取接口公开（GET + 阅读量递增）
+                .requestMatchers(org.springframework.http.HttpMethod.GET, "/api/articles/**").permitAll()
+                .requestMatchers(org.springframework.http.HttpMethod.GET, "/api/users/*/profile").permitAll()
+                .requestMatchers(org.springframework.http.HttpMethod.POST, "/api/articles/*/view").permitAll()
+                // 搜索和分类接口公开（GET）
+                .requestMatchers(org.springframework.http.HttpMethod.GET, "/api/search/**").permitAll()
+                .requestMatchers(org.springframework.http.HttpMethod.GET, "/api/categories/**").permitAll()
                 // SSE 订阅接口放行，让请求到达 Controller 后再校验认证
-                // 因为 SSE 是异步请求，如果在过滤器链中认证失败会导致 "response is already committed" 错误
                 .requestMatchers("/api/notifications/subscribe").permitAll()
-                // 导出/下载接口放行（文件下载需要认证，但下载请求本身需要放行）
-                .requestMatchers("/api/export/download").permitAll()
+                // RAG 问答接口放行（认证由 Gateway 的 X-User-Id 头传播保证）
+                .requestMatchers("/api/rag/**").permitAll()
                 // 图片文件接口放行（文章中的图片是公开资源，允许匿名访问）
                 .requestMatchers("/api/images/*/file").permitAll()
                 // 需要认证的接口（其他所有接口）

@@ -1,7 +1,8 @@
     package com.nineone.markdown.handler;
 
-import com.nineone.markdown.common.Result;
+import com.nineone.common.result.Result;
 import com.nineone.markdown.exception.AuthenticationException;
+import com.nineone.markdown.exception.BizException;
 import com.nineone.markdown.exception.PermissionDeniedException;
 import io.jsonwebtoken.ExpiredJwtException;
 import io.jsonwebtoken.security.SignatureException;
@@ -110,6 +111,32 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * 处理业务异常
+     */
+    @ExceptionHandler(BizException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public Result<Map<String, String>> handleBizException(BizException e) {
+        log.warn("业务异常: {}", e.getMessage());
+        Map<String, String> error = new HashMap<>();
+        error.put("message", e.getMessage());
+        error.put("code", e.getCode() != null ? e.getCode() : "BIZ_ERROR");
+        return Result.failure(e.getMessage(), error);
+    }
+
+    /**
+     * 处理非法参数异常
+     */
+    @ExceptionHandler(IllegalArgumentException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public Result<Map<String, String>> handleIllegalArgumentException(IllegalArgumentException e) {
+        log.warn("非法参数: {}", e.getMessage());
+        Map<String, String> error = new HashMap<>();
+        error.put("message", e.getMessage());
+        error.put("code", "ILLEGAL_ARGUMENT");
+        return Result.failure(e.getMessage(), error);
+    }
+
+    /**
      * 处理HTTP消息不可读异常（JSON解析错误）
      */
     @ExceptionHandler(HttpMessageNotReadableException.class)
@@ -117,13 +144,9 @@ public class GlobalExceptionHandler {
     public Result<Map<String, String>> handleHttpMessageNotReadableException(HttpMessageNotReadableException e) {
         log.warn("JSON解析错误: {}", e.getMessage());
         Map<String, String> error = new HashMap<>();
-        error.put("message", "文章内容不能为空");
+        error.put("message", "请求体格式错误");
         error.put("code", "JSON_PARSE_ERROR");
-        return Result.<Map<String, String>>builder()
-                .code(400)
-                .message("文章内容不能为空")
-                .data(error)
-                .build();
+        return Result.failure("请求体格式错误", error);
     }
 
     /**

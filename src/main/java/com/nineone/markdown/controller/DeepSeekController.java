@@ -1,6 +1,6 @@
  package com.nineone.markdown.controller;
 
-import com.nineone.markdown.common.Result;
+import com.nineone.common.result.Result;
 import com.nineone.markdown.service.AiSummaryService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -282,6 +282,84 @@ public class DeepSeekController {
             result.put("error", e.getMessage());
             result.put("serviceUsed", aiSummaryService.getServiceName());
             return Result.failure("文本润色失败: " + e.getMessage(), result);
+        }
+    }
+
+    /**
+     * 获取 AI 功能特性状态
+     * 返回各 AI 功能的可用性标识
+     */
+    @GetMapping("/features")
+    public Result<Map<String, Object>> getFeatures() {
+        Map<String, Object> features = new HashMap<>();
+
+        boolean apiConfigured = apiKey != null && !apiKey.trim().isEmpty();
+        boolean connected = testConnection();
+
+        features.put("summary", apiConfigured && connected);
+        features.put("polish", apiConfigured && connected);
+        features.put("titleGeneration", apiConfigured && connected);
+        features.put("chat", apiConfigured && connected);
+        features.put("structureOptimization", apiConfigured && connected);
+        features.put("tagGeneration", apiConfigured && connected);
+        features.put("apiConfigured", apiConfigured);
+        features.put("connected", connected);
+        features.put("model", model);
+        features.put("serviceName", aiSummaryService.getServiceName());
+
+        log.info("AI 功能特性状态查询: apiConfigured={}, connected={}", apiConfigured, connected);
+        return Result.success("AI 功能特性查询成功", features);
+    }
+
+    /**
+     * 优化文章结构
+     * 使用 AI 对文章内容进行结构优化
+     */
+    @PostMapping("/optimize-structure")
+    public Result<Map<String, Object>> optimizeStructure(@RequestBody Map<String, String> request) {
+        String content = request.get("content");
+        String targetLength = request.get("targetLength");
+        String includeSections = request.get("includeSections");
+
+        if (content == null || content.trim().isEmpty()) {
+            return Result.failure("文章内容不能为空");
+        }
+
+        try {
+            log.info("DeepSeek 结构优化请求，内容长度: {}, 目标长度: {}, 包含章节: {}",
+                    content.length(), targetLength, includeSections);
+
+            // 构建优化提示词
+            StringBuilder prompt = new StringBuilder();
+            prompt.append("请优化以下文章的结构，使其更加清晰、逻辑更连贯。");
+            if (targetLength != null && !targetLength.isEmpty()) {
+                prompt.append("目标长度：").append(targetLength).append("。");
+            }
+            if (includeSections != null && !includeSections.isEmpty()) {
+                prompt.append("请包含以下章节：").append(includeSections).append("。");
+            }
+            prompt.append("\n\n原文：\n").append(content);
+
+            String optimized = aiSummaryService.generateSummary(prompt.toString());
+
+            Map<String, Object> result = new HashMap<>();
+            result.put("originalLength", content.length());
+            result.put("optimizedLength", optimized.length());
+            result.put("original", content);
+            result.put("optimized", optimized);
+            result.put("serviceUsed", aiSummaryService.getServiceName());
+            result.put("success", true);
+
+            log.info("DeepSeek 结构优化成功，优化后长度: {}", optimized.length());
+            return Result.success("文章结构优化成功", result);
+
+        } catch (Exception e) {
+            log.error("DeepSeek 结构优化失败", e);
+            Map<String, Object> result = new HashMap<>();
+            result.put("success", false);
+            result.put("error", e.getMessage());
+            result.put("serviceUsed", aiSummaryService.getServiceName());
+            return Result.failure("文章结构优化失败: " + e.getMessage(), result);
         }
     }
 
