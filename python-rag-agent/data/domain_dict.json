@@ -1,0 +1,113 @@
+{
+  "abbreviations": {
+    "SS": "Spring Security",
+    "SB": "Spring Boot",
+    "ES": "Elasticsearch",
+    "k8s": "Kubernetes",
+    "CI/CD": "持续集成持续部署",
+    "CDN": "内容分发网络",
+    "API": "应用程序接口",
+    "SDK": "软件开发工具包",
+    "ORM": "对象关系映射",
+    "JWT": "JSON Web Token",
+    "JVM": "Java虚拟机",
+    "GC": "垃圾回收",
+    "OOM": "内存溢出",
+    "ACID": "原子性一致性隔离性持久性",
+    "CAP": "一致性可用性分区容错",
+    "DTO": "数据传输对象",
+    "VO": "视图对象",
+    "DAO": "数据访问对象",
+    "AOP": "面向切面编程",
+    "IOC": "控制反转",
+    "DI": "依赖注入",
+    "MQ": "消息队列",
+    "RPC": "远程过程调用",
+    "LB": "负载均衡",
+    "HA": "高可用",
+    "TPS": "每秒事务数",
+    "QPS": "每秒查询数",
+    "RDB": "关系型数据库",
+    "NoSQL": "非关系型数据库",
+    "YAML": "YAML配置文件",
+    "XML": "XML配置文件"
+  },
+  "synonyms": {
+    "微服务": ["微服务架构", "microservices", "MSA", "服务化"],
+    "容器": ["Container", "Docker容器", "容器化", "Docker"],
+    "消息队列": ["MQ", "Message Queue", "Kafka", "RabbitMQ", "RocketMQ"],
+    "缓存": ["Cache", "Redis", "Memcached", "缓存策略", "缓存中间件"],
+    "数据库": ["Database", "MySQL", "PostgreSQL", "MongoDB", "MariaDB"],
+    "网关": ["Gateway", "API网关", "Spring Cloud Gateway", "Nginx", "Kong"],
+    "注册中心": ["Registry", "Nacos", "Eureka", "Consul", "Zookeeper", "服务发现"],
+    "配置中心": ["Config Center", "Nacos Config", "Spring Cloud Config", "Apollo"],
+    "熔断": ["Circuit Breaker", "Sentinel", "Hystrix", "Resilience4j", "降级"],
+    "限流": ["Rate Limiting", "流量控制", "Sentinel", "令牌桶", "漏桶"],
+    "负载均衡": ["Load Balancer", "Ribbon", "Nginx", "LVS", "HAProxy"],
+    "容器编排": ["Container Orchestration", "Kubernetes", "k8s", "Docker Swarm"],
+    "日志": ["Log", "ELK", "Elasticsearch", "Logstash", "Kibana", "日志系统"],
+    "监控": ["Monitor", "Prometheus", "Grafana", "指标", "告警", "可观测性"],
+    "链路追踪": ["Tracing", "Jaeger", "Zipkin", "SkyWalking", "分布式追踪"],
+    "认证": ["Authentication", "Auth", "登录", "JWT", "OAuth2", "SSO", "单点登录"],
+    "授权": ["Authorization", "权限", "RBAC", "访问控制", "Spring Security"],
+    "事务": ["Transaction", "ACID", "分布式事务", "Seata", "XA", "TCC", "Saga"],
+    "领域驱动设计": ["DDD", "Domain Driven Design", "领域模型"],
+    "响应式编程": ["Reactive", "WebFlux", "Reactor", "RxJava"],
+    "函数式编程": ["FP", "Functional Programming", "Lambda", "Stream"],
+    "设计模式": ["Design Pattern", "设计原则", "SOLID", "GoF"],
+    "敏捷开发": ["Agile", "Scrum", "迭代开发", "持续交付"],
+    "DevOps": ["开发运维", "CI/CD", "持续集成", "持续部署", "Jenkins"]
+  },
+  "entities": {
+    "Spring Boot": {
+      "type": "技术框架",
+      "related": ["Spring Cloud", "微服务", "Java", "自动配置", "Starter"],
+      "tags": ["Java框架", "后端开发", "Spring全家桶"]
+    },
+    "Spring Cloud": {
+      "type": "技术框架",
+      "related": ["Spring Boot", "微服务", "Nacos", "Gateway", "Feign"],
+      "tags": ["Java框架", "微服务", "Spring全家桶"]
+    },
+    "Nacos": {
+      "type": "基础设施",
+      "related": ["注册中心", "配置中心", "Spring Cloud", "服务发现"],
+      "tags": ["微服务", "阿里巴巴", "服务治理"]
+    },
+    "Redis": {
+      "type": "基础设施",
+      "related": ["缓存", "分布式锁", "消息队列", "Session", "Redisson"],
+      "tags": ["缓存", "NoSQL", "中间件"]
+    },
+    "Elasticsearch": {
+      "type": "基础设施",
+      "related": ["全文搜索", "ELK", "倒排索引", "IK分词器", "Kibana"],
+      "tags": ["搜索", "NoSQL", "中间件", "ES"]
+    },
+    "MySQL": {
+      "type": "基础设施",
+      "related": ["数据库", "InnoDB", "索引", "事务", "SQL优化"],
+      "tags": ["数据库", "RDB", "持久化"]
+    },
+    "MyBatis-Plus": {
+      "type": "技术框架",
+      "related": ["MyBatis", "ORM", "MySQL", "LambdaQueryWrapper", "BaseMapper"],
+      "tags": ["Java框架", "ORM", "数据层"]
+    },
+    "DeepSeek": {
+      "type": "AI服务",
+      "related": ["LLM", "大语言模型", "DeepSeek API", "AI", "Chat", "RAG"],
+      "tags": ["AI", "大模型", "DeepSeek"]
+    },
+    "JWT": {
+      "type": "技术概念",
+      "related": ["认证", "Token", "Spring Security", "OAuth2", "无状态"],
+      "tags": ["安全", "认证", "Token"]
+    },
+    "Docker": {
+      "type": "工具",
+      "related": ["容器", "Docker Compose", "镜像", "Dockerfile", "Kubernetes"],
+      "tags": ["容器化", "DevOps", "部署"]
+    }
+  }
+}

@@ -18,6 +18,13 @@ node_modules/
 elasticsearch/*.zip
 elasticsearch/data/
 
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+venv/
+
 # 临时文件
 *.tmp
 *.bak
